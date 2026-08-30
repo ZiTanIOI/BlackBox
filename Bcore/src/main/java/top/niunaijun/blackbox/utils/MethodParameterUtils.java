@@ -5,8 +5,29 @@ import java.util.HashSet;
 
 import top.niunaijun.blackbox.BlackBoxCore;
 import top.niunaijun.blackbox.app.BActivityThread;
+import top.niunaijun.blackbox.utils.compat.BuildCompat;
+import top.niunaijun.blackbox.utils.compat.ContextCompat;
 
 public class MethodParameterUtils {
+
+    /**
+     * 把参数中所有 AttributionSource 的身份改写为宿主（包名 + uid）。
+     * 现代系统服务（ConnectivityService 等）会校验 attribution 包名是否属于调用 uid，
+     * 虚拟包名 + 宿主 uid 的组合会触发 SecurityException
+     * （"Package xxx does not belong to xxx"），导致应用崩溃。
+     */
+    public static void fixAttributionSourceArgs(Object[] args) {
+        if (args == null) {
+            return;
+        }
+        int uid = BuildCompat.isUpsideDownCake() ? BlackBoxCore.getHostUid() : BActivityThread.getBUid();
+        for (int i = 0; i < args.length; i++) {
+            Object arg = args[i];
+            if (arg != null && "android.content.AttributionSource".equals(arg.getClass().getName())) {
+                ContextCompat.fixAttributionSourceState(arg, uid);
+            }
+        }
+    }
 
     public static <T> T getFirstParam(Object[] args, Class<T> tClass) {
         if (args == null) {
