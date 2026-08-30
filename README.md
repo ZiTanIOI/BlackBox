@@ -7,11 +7,18 @@
 > <p align="right">——David Emery</p>
 
 ![](https://img.shields.io/badge/language-java-brightgreen.svg)
+![fork](https://img.shields.io/badge/forked%20from-FBlackBox%2FBlackBox-blue)
+
+> **本仓库 Fork 自 [FBlackBox/BlackBox](https://github.com/FBlackBox/BlackBox)**，并在其基础上适配兼容到 Android 16。
 
 黑盒BlackBox，是一款虚拟引擎，可以在Android上克隆、运行虚拟应用，拥有免安装运行能力。黑盒可以掌控被运行的虚拟应用，做任何想做的事情。
 
 ## 支持
-暂不考虑4x，目前已兼容 5.0 ～ 12.0并跟进后续新系统。
+暂不考虑4x，目前已兼容 5.0 ～ 16.0。
+
+本 Fork 相比上游的主要改动（Android 16 适配）：
+- 修复虚拟应用启动失败（`HCallbackProxy` 空指针与 Android 16 上 `LaunchActivityItem` 换入失效导致的启动死循环）
+- 修复容器内 WebView 报 `net::ERR_CACHE_MISS`（`checkSelfPermission(INTERNET)` 误判 DENIED 导致 WebView 禁网，见 `checkPermissionForDevice` 等权限查询 hook）
 
 如果条件允许，降级targetSdkVersion到28或以下可以获得更好的兼容性。
 

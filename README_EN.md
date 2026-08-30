@@ -6,11 +6,18 @@
 
 
 ![](https://img.shields.io/badge/language-java-brightgreen.svg)
+![fork](https://img.shields.io/badge/forked%20from-FBlackBox%2FBlackBox-blue)
+
+> **This repository is forked from [FBlackBox/BlackBox](https://github.com/FBlackBox/BlackBox)**, with additional fixes bringing compatibility up to Android 16.
 
 BlackBox is a virtual engine, it can clone and run virtual application on Android,  users don't have to install APK file to run the application on devices. BlackBox control all virtual applications, so you can do anything you want by using BlackBox.
 
 ## Support
-Currently we don't consider supporting Android 4.x, it supports Android 5.0 ～ 12.0.
+Currently we don't consider supporting Android 4.x, it supports Android 5.0 ～ 16.0.
+
+Main changes in this fork compared to upstream (Android 16 adaptation):
+- Fixed virtual app launch failure (`HCallbackProxy` NPE, and the launch loop caused by the `LaunchActivityItem` swap no longer working on Android 16)
+- Fixed WebView `net::ERR_CACHE_MISS` inside the container (`checkSelfPermission(INTERNET)` was wrongly DENIED, causing WebView to block all network; see the `checkPermissionForDevice` and other permission-query hooks)
 
 If conditions permit, downgrade targetSdkVersion to 28 or below for better compatibility.
 
