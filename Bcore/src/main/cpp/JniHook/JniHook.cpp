@@ -80,8 +80,22 @@ inline static bool ClearFastNativeFlag(char *art_method) {
 static void *GetArtMethod(JNIEnv *env, jclass clazz, jmethodID methodId) {
     if (HookEnv.api_level >= __ANDROID_API_Q__) {
         jclass executable = env->FindClass("java/lang/reflect/Executable");
+        if (!executable) {
+            env->ExceptionClear();
+            ALOGE("GetArtMethod: findClass Executable failed");
+            return nullptr;
+        }
         jfieldID artId = env->GetFieldID(executable, "artMethod", "J");
+        if (!artId) {
+            env->ExceptionClear();
+            ALOGE("GetArtMethod: Executable.artMethod field not found");
+            return nullptr;
+        }
         jobject method = env->ToReflectedMethod(clazz, methodId, true);
+        if (!method) {
+            env->ExceptionClear();
+            return nullptr;
+        }
         return reinterpret_cast<void *>(env->GetLongField(method, artId));
     } else {
         return methodId;
@@ -91,7 +105,18 @@ static void *GetArtMethod(JNIEnv *env, jclass clazz, jmethodID methodId) {
 static void *GetFieldMethod(JNIEnv *env, jobject field) {
     if (HookEnv.api_level >= __ANDROID_API_Q__) {
         jclass fieldClass = env->FindClass("java/lang/reflect/Field");
+        if (!fieldClass) {
+            env->ExceptionClear();
+            ALOGE("GetFieldMethod: findClass Field failed");
+            return nullptr;
+        }
         jmethodID getArtField = env->GetMethodID(fieldClass, "getArtField", "()J");
+        if (!getArtField) {
+            // Android 新版本可能移除 getArtField
+            env->ExceptionClear();
+            ALOGE("GetFieldMethod: Field.getArtField not found");
+            return nullptr;
+        }
         return reinterpret_cast<void *>(env->CallLongMethod(field, getArtField));
     } else {
         return env->FromReflectedField(field);
@@ -119,7 +144,7 @@ void JniHook::HookJniFun(JNIEnv *env, jobject java_method, void *new_fun,
 void
 JniHook::HookJniFun(JNIEnv *env, const char *class_name, const char *method_name, const char *sign,
                     void *new_fun, void **orig_fun, bool is_static) {
-    if (HookEnv.art_method_native_offset == 0) {
+    if (HookEnv.art_method_native_offset == 0 || HookEnv.art_method_flags_offset == 0) {
         return;
     }
     jclass clazz = env->FindClass(class_name);
@@ -144,12 +169,16 @@ JniHook::HookJniFun(JNIEnv *env, const char *class_name, const char *method_name
     };
 
     auto artMethod = reinterpret_cast<uintptr_t *>(GetArtMethod(env, clazz, method));
-    if (!CheckFlags(artMethod)) {
-        ALOGE("check flags error. class：%s, method：%s", class_name, method_name);
+    if (!artMethod || !CheckFlags(artMethod)) {
+        env->ExceptionClear();
+        ALOGE("get art method or check flags error. class：%s, method：%s", class_name, method_name);
         return;
     }
     *orig_fun = reinterpret_cast<void *>(artMethod[HookEnv.art_method_native_offset]);
     if (env->RegisterNatives(clazz, gMethods, 1) < 0) {
+        // Android 15/16 起 RegisterNatives 失败会抛 NoSuchMethodError（pending exception），
+        // 不清理的话下一次 JNI 调用在 CheckJNI 下直接 abort
+        env->ExceptionClear();
         ALOGE("jni hook error. class：%s, method：%s", class_name, method_name);
         return;
     }
@@ -206,20 +235,41 @@ void JniHook::InitJniHook(JNIEnv *env, int api_level) {
     HookEnv.api_level = api_level;
 
     jclass clazz = env->FindClass("top/niunaijun/jnihook/jni/JniHook");
+    if (!clazz) {
+        env->ExceptionClear();
+        ALOGE("InitJniHook: findClass JniHook failed");
+        return;
+    }
     jmethodID nativeOffsetId = env->GetStaticMethodID(clazz, "nativeOffset", "()V");
     jmethodID nativeOffset2Id = env->GetStaticMethodID(clazz, "nativeOffset2", "()V");
 
     jfieldID nativeOffsetFieldId = env->GetStaticFieldID(clazz, "NATIVE_OFFSET", "I");
     jfieldID nativeOffsetField2Id = env->GetStaticFieldID(clazz, "NATIVE_OFFSET_2", "I");
 
-    void *nativeOffsetField = GetFieldMethod(env, env->ToReflectedField(clazz, nativeOffsetFieldId,
-                                                                        true));
-    void *nativeOffsetField2 = GetFieldMethod(env, env->ToReflectedField(clazz, nativeOffsetField2Id,
-                                                                         true));
+    if (!nativeOffsetId || !nativeOffset2Id || !nativeOffsetFieldId || !nativeOffsetField2Id) {
+        env->ExceptionClear();
+        ALOGE("InitJniHook: method/field lookup failed");
+        return;
+    }
+
+    jobject reflectedField1 = env->ToReflectedField(clazz, nativeOffsetFieldId, true);
+    jobject reflectedField2 = env->ToReflectedField(clazz, nativeOffsetField2Id, true);
+    void *nativeOffsetField = reflectedField1 ? GetFieldMethod(env, reflectedField1) : nullptr;
+    void *nativeOffsetField2 = reflectedField2 ? GetFieldMethod(env, reflectedField2) : nullptr;
+    if (!nativeOffsetField || !nativeOffsetField2 || (size_t) nativeOffsetField2 <= (size_t) nativeOffsetField) {
+        env->ExceptionClear();
+        ALOGE("InitJniHook: get art field failed, skip jni hook");
+        return;
+    }
     HookEnv.art_field_size = (size_t) nativeOffsetField2 - (size_t) nativeOffsetField;
 
     void *nativeOffset = GetArtMethod(env, clazz, nativeOffsetId);
     void *nativeOffset2 = GetArtMethod(env, clazz, nativeOffset2Id);
+    if (!nativeOffset || !nativeOffset2 || (size_t) nativeOffset2 <= (size_t) nativeOffset) {
+        env->ExceptionClear();
+        ALOGE("InitJniHook: get art method failed, skip jni hook");
+        return;
+    }
     HookEnv.art_method_size = (size_t) nativeOffset2 - (size_t) nativeOffset;
 
     // calc native offset
@@ -229,6 +279,10 @@ void JniHook::InitJniHook(JNIEnv *env, int api_level) {
             HookEnv.art_method_native_offset = i;
             break;
         }
+    }
+    if (HookEnv.art_method_native_offset == 0) {
+        ALOGE("InitJniHook: calc art_method_native_offset failed, skip jni hook");
+        return;
     }
 
     uint32_t flags = 0x0;
@@ -247,6 +301,10 @@ void JniHook::InitJniHook(JNIEnv *env, int api_level) {
             HookEnv.art_method_flags_offset = i * sizeof(uint32_t);
             break;
         }
+    }
+    if (HookEnv.art_method_flags_offset == 0) {
+        ALOGE("InitJniHook: calc art_method_flags_offset failed, skip jni hook");
+        return;
     }
 
     flags = 0x0;

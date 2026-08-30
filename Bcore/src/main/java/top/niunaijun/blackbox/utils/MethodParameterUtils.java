@@ -19,6 +19,30 @@ public class MethodParameterUtils {
         return null;
     }
 
+    /**
+     * Android 14 (API 34) 起 binder 层 PackageManager 的 flags 参数由 int 改为 long，
+     * 反射拿到的是 java.lang.Long，直接强转 (int)/(Integer) 会抛 ClassCastException。
+     * 统一用 Number 接口做安全转换，兼容 int/long 两种版本。
+     */
+    public static int toIntValue(Object arg) {
+        return arg instanceof Number ? ((Number) arg).intValue() : 0;
+    }
+
+    /**
+     * 取参数数组中第一个 Number 参数的 int 值（用于兼容 flags 位置在新旧系统上有差异的接口）。
+     */
+    public static int getFirstNumberValue(Object[] args) {
+        if (args == null) {
+            return 0;
+        }
+        for (Object arg : args) {
+            if (arg instanceof Number) {
+                return ((Number) arg).intValue();
+            }
+        }
+        return 0;
+    }
+
     public static String replaceFirstAppPkg(Object[] args) {
         if (args == null) {
             return null;
@@ -70,6 +94,23 @@ public class MethodParameterUtils {
             int uid = (int) args[index];
             if (uid == BActivityThread.getBUid()) {
                 args[index] = BlackBoxCore.getHostUid();
+            }
+        }
+    }
+
+    /**
+     * 把参数中所有等于虚拟 uid 的 int 替换为宿主 uid。
+     * 部分新版接口（如 checkPermissionForDevice(permission, pid, uid, deviceId)）
+     * 的最后一个 int 参数是 deviceId 而非 uid，不能使用 replaceLastUid。
+     */
+    public static void replaceAppUid(Object[] args) {
+        if (args == null) {
+            return;
+        }
+        int uid = BActivityThread.getBUid();
+        for (int i = 0; i < args.length; i++) {
+            if (args[i] instanceof Integer && (Integer) args[i] == uid) {
+                args[i] = BlackBoxCore.getHostUid();
             }
         }
     }

@@ -108,6 +108,11 @@ public class HCallbackProxy implements IInjectHook, Handler.Callback {
 
     private Object getLaunchActivityItem(Object clientTransaction) {
         List<Object> mActivityCallbacks = BRClientTransaction.get(clientTransaction).mActivityCallbacks();
+        // mActivityCallbacks is lazily initialized on newer Android versions and is
+        // null for transactions that only carry a lifecycle state request (e.g. pause/resume).
+        if (mActivityCallbacks == null) {
+            return null;
+        }
 
         for (Object obj : mActivityCallbacks) {
             if (BRLaunchActivityItem.getRealClass().getName().equals(obj.getClass().getCanonicalName())) {
@@ -175,10 +180,19 @@ public class HCallbackProxy implements IInjectHook, Handler.Callback {
 
             if (BuildCompat.isS()) {
                 Object record = BRActivityThread.get(BlackBoxCore.mainThread()).getLaunchingActivity(token);
-                ActivityThreadActivityClientRecordContext clientRecordContext = BRActivityThreadActivityClientRecord.get(record);
-                clientRecordContext._set_intent(stubRecord.mTarget);
-                clientRecordContext._set_activityInfo(activityInfo);
-                clientRecordContext._set_packageInfo(BActivityThread.currentActivityThread().getPackageInfo());
+                if (record != null) {
+                    ActivityThreadActivityClientRecordContext clientRecordContext = BRActivityThreadActivityClientRecord.get(record);
+                    clientRecordContext._set_intent(stubRecord.mTarget);
+                    clientRecordContext._set_activityInfo(activityInfo);
+                    clientRecordContext._set_packageInfo(BActivityThread.currentActivityThread().getPackageInfo());
+                }
+                // Since recent Android versions, LaunchActivityItem.execute() builds a
+                // fresh ActivityClientRecord from the item's own fields and
+                // ActivityThread.getLaunchingActivity() is gone, so the item itself
+                // must be swapped for the target activity to be instantiated.
+                LaunchActivityItemContext launchActivityItemContext = BRLaunchActivityItem.get(r);
+                launchActivityItemContext._set_mIntent(stubRecord.mTarget);
+                launchActivityItemContext._set_mInfo(activityInfo);
 
                 checkActivityClient();
             } else if (BuildCompat.isPie()) {

@@ -580,12 +580,26 @@ public class IActivityManagerProxy extends ClassInvocationStub {
     public static class checkPermission extends MethodHook {
         @Override
         protected Object hook(Object who, Method method, Object[] args) throws Throwable {
-            MethodParameterUtils.replaceLastUid(args);
+            MethodParameterUtils.replaceAppUid(args);
             String permission = (String) args[0];
             if (permission.equals(Manifest.permission.ACCOUNT_MANAGER)
                     || permission.equals(Manifest.permission.SEND_SMS)) {
                 return PackageManager.PERMISSION_GRANTED;
             }
+            return method.invoke(who, args);
+        }
+    }
+
+    /**
+     * Android 16 起 checkSelfPermission 走 ActivityManager.checkPermissionForDevice，
+     * 与旧 checkPermission 同样需要把虚拟 uid 映射为宿主 uid，
+     * 否则 WebView 判定应用无 INTERNET 权限而禁网（net::ERR_CACHE_MISS）。
+     */
+    @ProxyMethod("checkPermissionForDevice")
+    public static class checkPermissionForDevice extends MethodHook {
+        @Override
+        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
+            MethodParameterUtils.replaceAppUid(args);
             return method.invoke(who, args);
         }
     }

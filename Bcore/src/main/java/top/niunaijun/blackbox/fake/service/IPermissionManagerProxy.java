@@ -2,14 +2,19 @@ package top.niunaijun.blackbox.fake.service;
 
 import android.content.pm.PackageManager;
 
+import java.lang.reflect.Method;
+
 import black.android.app.BRActivityThread;
 import black.android.app.BRContextImpl;
 import black.android.os.BRServiceManager;
 import black.android.permission.BRIPermissionManagerStub;
 import top.niunaijun.blackbox.BlackBoxCore;
 import top.niunaijun.blackbox.fake.hook.BinderInvocationStub;
+import top.niunaijun.blackbox.fake.hook.MethodHook;
+import top.niunaijun.blackbox.fake.hook.ProxyMethod;
 import top.niunaijun.blackbox.fake.service.base.PkgMethodProxy;
 import top.niunaijun.blackbox.fake.service.base.ValueMethodProxy;
+import top.niunaijun.blackbox.utils.MethodParameterUtils;
 import top.niunaijun.blackbox.utils.Reflector;
 import top.niunaijun.blackbox.utils.compat.BuildCompat;
 
@@ -70,6 +75,31 @@ public class IPermissionManagerProxy extends BinderInvocationStub {
     @Override
     public boolean isBadEnv() {
         return false;
+    }
+
+    /**
+     * 虚拟包名在真实 PMS 中不存在，权限查询会被误判为 DENIED。
+     * WebView 初始化时 checkSelfPermission(INTERNET) 为 DENIED 会导致
+     * blockNetworkLoads=true，所有页面加载报 net::ERR_CACHE_MISS。
+     * 因此把虚拟包名/uid 换成宿主的，按宿主的真实权限查询。
+     */
+    @ProxyMethod("checkPermission")
+    public static class CheckPermission extends MethodHook {
+        @Override
+        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
+            MethodParameterUtils.replaceFirstAppPkg(args);
+            MethodParameterUtils.replaceAppUid(args);
+            return method.invoke(who, args);
+        }
+    }
+
+    @ProxyMethod("checkUidPermission")
+    public static class CheckUidPermission extends MethodHook {
+        @Override
+        protected Object hook(Object who, Method method, Object[] args) throws Throwable {
+            MethodParameterUtils.replaceAppUid(args);
+            return method.invoke(who, args);
+        }
     }
 
 }

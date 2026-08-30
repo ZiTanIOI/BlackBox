@@ -57,7 +57,10 @@ public class ContextCompat {
             BRContentResolver.get(context.getContentResolver())._set_mPackageName(BlackBoxCore.getHostPkg());
 
             if (BuildCompat.isS()) {
-                fixAttributionSourceState(BRContextImpl.get(context).getAttributionSource(), BActivityThread.getBUid());
+                // Android 14+ 系统会校验 AttributionSource.uid == 真实 calling uid，
+                // 虚拟 uid 直接触发 SecurityException，因此 14+ 统一使用宿主 uid
+                int uid = BuildCompat.isUpsideDownCake() ? BlackBoxCore.getHostUid() : BActivityThread.getBUid();
+                fixAttributionSourceState(BRContextImpl.get(context).getAttributionSource(), uid);
             }
         } catch (Exception e) {
             e.printStackTrace();
