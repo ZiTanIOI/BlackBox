@@ -14,6 +14,11 @@
         app:showAsAction="never" />
 
     <item
+        android:id="@+id/main_refresh_process"
+        android:title="@string/refresh_process"
+        app:showAsAction="never" />
+
+    <item
             android:id="@+id/main_git"
             android:title="@string/open_source_path"
             app:showAsAction="never" />

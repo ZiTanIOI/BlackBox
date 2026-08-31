@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 
 import top.niunaijun.blackbox.core.env.BEnvironment;
+import top.niunaijun.blackbox.core.system.BProcessManagerService;
 import top.niunaijun.blackbox.core.system.ISystemService;
 import top.niunaijun.blackbox.core.system.user.BUserHandle;
 import top.niunaijun.blackbox.entity.pm.InstalledModule;
@@ -65,6 +66,8 @@ public class BXposedManagerService extends IBXposedManagerService.Stub implement
             mXposedConfig.enable = enable;
             saveModuleStateLw();
         }
+        // 已运行的容器进程不会再走 loadXposed，杀掉后下次启动才生效
+        BProcessManagerService.get().killAllProcesses();
     }
 
     @Override
@@ -84,6 +87,7 @@ public class BXposedManagerService extends IBXposedManagerService.Stub implement
             mXposedConfig.moduleState.put(packageName, enable);
             saveModuleStateLw();
         }
+        BProcessManagerService.get().killAllProcesses();
     }
 
     @Override
@@ -104,6 +108,11 @@ public class BXposedManagerService extends IBXposedManagerService.Stub implement
             }
             return installedModules;
         }
+    }
+
+    @Override
+    public void killAllProcesses() {
+        BProcessManagerService.get().killAllProcesses();
     }
 
     private void loadModuleStateLr() {

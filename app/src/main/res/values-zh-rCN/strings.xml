@@ -10,6 +10,8 @@
     <string name="xp_setting">XP管理</string>
     <string name="tg_group">交流群</string>
     <string name="setting">软件设置</string>
+    <string name="refresh_process">刷新进程</string>
+    <string name="refresh_process_done">容器进程已全部结束，下次启动加载最新配置</string>
     <string name="permission_setting">权限设置</string>
     <string name="fake_location">虚拟定位(预览版)</string>
     <string name="real_location">真实位置</string>

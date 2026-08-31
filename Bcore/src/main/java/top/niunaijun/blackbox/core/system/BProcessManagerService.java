@@ -257,6 +257,23 @@ public class BProcessManagerService implements ISystemService {
         }
     }
 
+    /**
+     * 杀掉全部容器应用进程。全局配置（如启用 Xposed、模块开关）变更时调用：
+     * 已运行的容器进程在 bindApplication 里 isInit() 短路，不会再执行
+     * loadXposed 等初始化，复用旧进程会让新配置永远不生效。
+     */
+    public void killAllProcesses() {
+        synchronized (mProcessLock) {
+            synchronized (mPidsSelfLocked) {
+                for (ProcessRecord processRecord : mPidsSelfLocked) {
+                    processRecord.kill();
+                }
+                mPidsSelfLocked.clear();
+                mProcessMap.clear();
+            }
+        }
+    }
+
     public List<ProcessRecord> getPackageProcessAsUser(String packageName, int userId) {
         synchronized (mProcessMap) {
             int buid = BUserHandle.getUid(userId, BPackageManagerService.get().getAppId(packageName));

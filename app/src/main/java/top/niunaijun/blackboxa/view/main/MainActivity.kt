@@ -12,12 +12,14 @@ import androidx.viewpager2.widget.ViewPager2
 import com.afollestad.materialdialogs.MaterialDialog
 import com.afollestad.materialdialogs.input.input
 import top.niunaijun.blackbox.BlackBoxCore
+import top.niunaijun.blackbox.fake.frameworks.BXposedManager
 import top.niunaijun.blackboxa.R
 import top.niunaijun.blackboxa.app.App
 import top.niunaijun.blackboxa.app.AppManager
 import top.niunaijun.blackboxa.databinding.ActivityMainBinding
 import top.niunaijun.blackboxa.util.Resolution
 import top.niunaijun.blackboxa.util.inflate
+import top.niunaijun.blackboxa.util.toast
 import top.niunaijun.blackboxa.view.apps.AppsFragment
 import top.niunaijun.blackboxa.view.base.LoadingActivity
 import top.niunaijun.blackboxa.view.fake.FakeManagerActivity
@@ -176,6 +178,11 @@ class MainActivity : LoadingActivity() {
                 val intent = Intent(this, FakeManagerActivity::class.java)
                 intent.putExtra("userID", 0)
                 startActivity(intent)
+            }
+
+            R.id.main_refresh_process -> {
+                BXposedManager.get().killAllProcesses()
+                toast(R.string.refresh_process_done)
             }
         }
 

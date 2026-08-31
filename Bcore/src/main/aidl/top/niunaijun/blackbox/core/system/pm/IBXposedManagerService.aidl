@@ -11,4 +11,5 @@ interface IBXposedManagerService {
     boolean isModuleEnable(String packageName);
     void setModuleEnable(String packageName, boolean enable);
     List<InstalledModule> getInstalledModules();
+    void killAllProcesses();
 }

@@ -71,4 +71,15 @@ public class BXposedManager extends BlackManager<IBXposedManagerService> {
         }
         return Collections.emptyList();
     }
+
+    /**
+     * 杀掉全部容器应用进程，下次拉起重新 bind、加载最新配置
+     */
+    public void killAllProcesses() {
+        try {
+            getService().killAllProcesses();
+        } catch (RemoteException e) {
+            e.printStackTrace();
+        }
+    }
 }
