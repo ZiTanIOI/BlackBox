@@ -19,6 +19,7 @@
 本 Fork 相比上游的主要改动（Android 16 适配）：
 - 修复虚拟应用启动失败（`HCallbackProxy` 空指针与 Android 16 上 `LaunchActivityItem` 换入失效导致的启动死循环）
 - 修复容器内 WebView 报 `net::ERR_CACHE_MISS`（`checkSelfPermission(INTERNET)` 误判 DENIED 导致 WebView 禁网，见 `checkPermissionForDevice` 等权限查询 hook）
+- 新增热修复：长按应用可配置补丁 dex，分身启动前注入到类加载器（见下方「热修复」）
 
 如果条件允许，降级targetSdkVersion到28或以下可以获得更好的兼容性。
 
@@ -95,6 +96,24 @@
 - 已支持使用XP模块
 - Xposed已粗略过检测，[Xposed Checker](https://www.coolapk.com/apk/190247)、[XposedDetector](https://github.com/vvb2060/XposedDetector) 均无法检测
 
+## 热修复
+本 Fork 新增了简单的类替换式热修复，无需修改目标应用。
+
+### 使用方法
+1. 主页长按目标应用，选择「热修复配置」。
+2. 点「选择补丁」，从文件选择器选择补丁文件（支持 `.dex` / `.apk` / `.jar`）。
+3. 对该应用「停止运行」后重新打开分身即生效；对话框中会显示当前补丁状态，点「移除补丁」可清除。
+
+### 原理
+分身应用的类加载器由容器创建并管理。分身进程启动、Application 创建之前，容器把补丁 dex 装入临时 DexClassLoader，并将其 `DexPathList.Element` 前插到应用类加载器的 `dexElements` 头部；后续 `loadClass` 会先命中补丁里的类，实现类替换。补丁类由应用类加载器自己定义，缺的依赖会顺着原加载器找回原 dex。
+
+### 限制与注意
+- 仅替换 Java/Kotlin 类（dex 级），不含资源、SO 库与 Manifest。
+- 补丁类与原类同包名同名即可覆盖，也可以在补丁中新增类。
+- 补丁更新/移除后需「停止运行」再打开才生效；每个分身进程（含多进程应用的子进程）启动时都会注入。
+- 卸载应用时会自动删除对应补丁；补丁保存于宿主私有目录 `blackbox/hotfix/` 下。
+- 从 2.2.0 起提供。
+
 
 ## 如何参与开发？
 ### 应用分2个模块
@@ -112,10 +131,7 @@
  - 提供更多接口给开发者（虚拟定位、应用注入等）
 
 ## 赞助
-本项目为免费开源项目，日常维护耗费大量精力。如想加快进度或请作者喝杯咖啡。
-
-- BTC: 3FCo9QtaSbGMhmZYzvL4XUoJUUxZeSdha4
-- USDT（TRC20）: TDzBj9eV1Cdmmj9xd5Y1YLsQqC8zVgi7yd
+本项目为免费开源项目，日常维护耗费大量精力。如想赞助，请联系原作者 FBlackBox 团队。
 
 ## 感谢
 - [VirtualApp](https://github.com/asLody/VirtualApp)

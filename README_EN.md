@@ -18,6 +18,7 @@ Currently we don't consider supporting Android 4.x, it supports Android 5.0 ～ 
 Main changes in this fork compared to upstream (Android 16 adaptation):
 - Fixed virtual app launch failure (`HCallbackProxy` NPE, and the launch loop caused by the `LaunchActivityItem` swap no longer working on Android 16)
 - Fixed WebView `net::ERR_CACHE_MISS` inside the container (`checkSelfPermission(INTERNET)` was wrongly DENIED, causing WebView to block all network; see the `checkPermissionForDevice` and other permission-query hooks)
+- Added hot-fix: configure a patch dex per app via long-press; it is injected into the class loader before the app starts (see "Hot-Fix" below)
 
 If conditions permit, downgrade targetSdkVersion to 28 or below for better compatibility.
 
@@ -95,6 +96,24 @@ If you want to perform more operations, please refer to the source code.
 - BlackBox has supported Xposed Modules.
 - BlackBox has hidden Xposed Framework, [Xposed Checker](https://www.coolapk.com/apk/190247) and [XposedDetector](https://github.com/vvb2060/XposedDetector) can't detect it.
 
+## Hot-Fix
+This fork adds a simple class-replacement hot-fix, without any modification of the target app.
+
+### Usage
+1. Long-press the target app on the home page and choose "Hot-Fix Config".
+2. Tap "Choose Patch" and pick a patch file (`.dex` / `.apk` / `.jar`) from the file picker.
+3. "Stop Running" the app and relaunch it to apply. The dialog shows the current patch status; tap "Remove Patch" to clear it.
+
+### How it works
+Class loaders of virtual apps are created and managed by the container. Before the Application is created at process startup, the container loads the patch dex with a temporary DexClassLoader and inserts its `DexPathList.Element` at the head of the app class loader's `dexElements`. Later `loadClass` calls hit the patched classes first, which replaces the original ones. Classes loaded from the patch are defined by the app class loader itself, so their dependencies still resolve against the original dex.
+
+### Limitations & notes
+- Only Java/Kotlin classes (dex level) are replaced; resources, native libs and the Manifest are not supported.
+- A patch class overrides the original one simply by having the same fully-qualified name; new classes can also be added via the patch.
+- After the patch file is updated or removed, the app must be stopped and relaunched to take effect; the patch is injected on every virtual process start (including child processes of multi-process apps).
+- Patches are removed automatically when the app is uninstalled, and are stored under the host's private directory `blackbox/hotfix/`.
+- Available since 2.2.0.
+
 
 ## How to contribute to this project 
 ### This project is divided into two modules
@@ -112,10 +131,7 @@ You can contribute to this project by making pull requests.
  - Provide more interfaces for developers (virtual location,  process injection, etc).
 
 ## Sponsorship
-This project is a free open source project , routine maintenance consumes a lot of time and effort . If you want to speed up the progress or buy the author a cup of coffee.
-
-- BTC: 3FCo9QtaSbGMhmZYzvL4XUoJUUxZeSdha4
-- USDT(TRC20): TDzBj9eV1Cdmmj9xd5Y1YLsQqC8zVgi7yd
+This project is a free open source project, routine maintenance consumes a lot of time and effort. If you want to sponsor it, please contact the original author, the FBlackBox team.
 
 ## Credits
 - [VirtualApp](https://github.com/asLody/VirtualApp)
