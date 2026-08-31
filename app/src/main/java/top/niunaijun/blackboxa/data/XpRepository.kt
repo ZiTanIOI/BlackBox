@@ -36,24 +36,31 @@ class XpRepository {
 
     fun installModule(source: String, resultLiveData: MutableLiveData<String>) {
         val blackBoxCore = BlackBoxCore.get()
+        try {
+            val installResult = if (URLUtil.isValidUrl(source)) {
+                val uri = Uri.parse(source)
+                blackBoxCore.installXPModule(uri)
+            } else {
+                //source == packageName
+                blackBoxCore.installXPModule(source)
+            }
 
-        val installResult = if (URLUtil.isValidUrl(source)) {
-            val uri = Uri.parse(source)
-            blackBoxCore.installXPModule(uri)
-        } else {
-            //source == packageName
-            blackBoxCore.installXPModule(source)
-        }
-
-        if(installResult.success){
-            resultLiveData.postValue(getString(R.string.install_success))
-        }else{
-            resultLiveData.postValue(getString(R.string.install_fail, installResult.msg))
+            if (installResult.success) {
+                resultLiveData.postValue(getString(R.string.install_success))
+            } else {
+                resultLiveData.postValue(getString(R.string.install_fail, installResult.msg))
+            }
+        } catch (e: Exception) {
+            resultLiveData.postValue(getString(R.string.install_fail, e.message ?: e.javaClass.simpleName))
         }
     }
 
     fun unInstallModule(packageName: String, resultLiveData: MutableLiveData<String>) {
-        BlackBoxCore.get().uninstallXPModule(packageName)
-        resultLiveData.postValue(getString(R.string.remove_success))
+        try {
+            BlackBoxCore.get().uninstallXPModule(packageName)
+            resultLiveData.postValue(getString(R.string.remove_success))
+        } catch (e: Exception) {
+            resultLiveData.postValue(getString(R.string.uninstall_fail))
+        }
     }
 }

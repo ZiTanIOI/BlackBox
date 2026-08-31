@@ -154,27 +154,35 @@ class AppsRepository {
 
     fun installApk(source: String, userId: Int, resultLiveData: MutableLiveData<String>) {
         val blackBoxCore = BlackBoxCore.get()
-        val installResult = if (URLUtil.isValidUrl(source)) {
-            val uri = Uri.parse(source)
-            blackBoxCore.installPackageAsUser(uri, userId)
-        } else {
-            blackBoxCore.installPackageAsUser(source, userId)
-        }
+        try {
+            val installResult = if (URLUtil.isValidUrl(source)) {
+                val uri = Uri.parse(source)
+                blackBoxCore.installPackageAsUser(uri, userId)
+            } else {
+                blackBoxCore.installPackageAsUser(source, userId)
+            }
 
-        if (installResult.success) {
-            updateAppSortList(userId, installResult.packageName, true)
-            resultLiveData.postValue(getString(R.string.install_success))
-        } else {
-            resultLiveData.postValue(getString(R.string.install_fail, installResult.msg))
+            if (installResult.success) {
+                updateAppSortList(userId, installResult.packageName, true)
+                resultLiveData.postValue(getString(R.string.install_success))
+            } else {
+                resultLiveData.postValue(getString(R.string.install_fail, installResult.msg))
+            }
+        } catch (e: Exception) {
+            resultLiveData.postValue(getString(R.string.install_fail, e.message ?: e.javaClass.simpleName))
         }
         scanUser()
     }
 
     fun unInstall(packageName: String, userID: Int, resultLiveData: MutableLiveData<String>) {
-        BlackBoxCore.get().uninstallPackageAsUser(packageName, userID)
-        updateAppSortList(userID, packageName, false)
-        scanUser()
-        resultLiveData.postValue(getString(R.string.uninstall_success))
+        try {
+            BlackBoxCore.get().uninstallPackageAsUser(packageName, userID)
+            updateAppSortList(userID, packageName, false)
+            scanUser()
+            resultLiveData.postValue(getString(R.string.uninstall_success))
+        } catch (e: Exception) {
+            resultLiveData.postValue(getString(R.string.uninstall_fail))
+        }
     }
 
 
@@ -185,8 +193,12 @@ class AppsRepository {
 
 
     fun clearApkData(packageName: String, userID: Int, resultLiveData: MutableLiveData<String>) {
-        BlackBoxCore.get().clearPackage(packageName, userID)
-        resultLiveData.postValue(getString(R.string.clear_success))
+        try {
+            BlackBoxCore.get().clearPackage(packageName, userID)
+            resultLiveData.postValue(getString(R.string.clear_success))
+        } catch (e: Exception) {
+            resultLiveData.postValue(getString(R.string.clear_fail))
+        }
     }
 
     /**

@@ -50,6 +50,7 @@
     <string name="uninstall_module_hint">是否卸载该模块，卸载后将无法再发挥作用？</string>
     <string name="remove_success">移除成功</string>
     <string name="clear_success">清除成功</string>
+    <string name="clear_fail">清除失败</string>
     <string name="start_fail">启动失败</string>
     <string name="start_in_outside">请在外部启动模块</string>
     <string name="restart_module">重新启动软件修改才能生效</string>

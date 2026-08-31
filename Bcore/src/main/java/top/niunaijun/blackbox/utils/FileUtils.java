@@ -174,8 +174,19 @@ public class FileUtils {
             }
             if (!link) {
                 String[] children = dir.list();
-                for (String file : children) {
-                    count += deleteDir(new File(dir, file));
+                if (children == null) {
+                    // 部分应用（如微信的 Flutter 缓存目录）会创建去掉读权限的目录，
+                    // list() 因 EACCES 返回 null；补回所有者 rwx 后重试一次，
+                    // 仍失败则放弃该层内容，仅尝试删除目录本身
+                    dir.setReadable(true, true);
+                    dir.setWritable(true, true);
+                    dir.setExecutable(true, true);
+                    children = dir.list();
+                }
+                if (children != null) {
+                    for (String file : children) {
+                        count += deleteDir(new File(dir, file));
+                    }
                 }
             }
         }

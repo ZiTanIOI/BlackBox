@@ -50,6 +50,7 @@
     <string name="uninstall_module_hint">Do you want to uninstall this module? It will no longer work after uninstallation?</string>
     <string name="remove_success">Removed Successfully</string>
     <string name="clear_success">Cleared Successfully</string>
+    <string name="clear_fail">Clear Failed</string>
     <string name="start_fail">Launched Failed</string>
     <string name="start_in_outside">Start module in outside</string>
     <string name="restart_module">Restart app to apply change</string>
