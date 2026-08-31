@@ -4,6 +4,10 @@
 // 在内存中遍历其 .dynamic -> .rela.plt / .rela.dyn，命中导入符号表后改写
 // GOT 表项。相比 inline hook libc 无需做指令重定位，安全性高得多。
 //
+// 并发注意：本函数可能与应用内其他线程的 dlopen/dlclose 并发执行，目标库
+// 的映射可能随时部分失效（头部页已映射、后续段未映射或刚被卸载）。因此对
+// 目标库的一切内存读取都必须先对照 maps 快照做可读性检查，否则会 SIGSEGV。
+//
 
 #include "NativeIOHook.h"
 
@@ -295,6 +299,7 @@ void resolveRealsViaDlsym() {
 struct MapRange {
     uintptr_t start;
     uintptr_t end;
+    bool readable;
     bool writable;
     char path[512];
 };
@@ -314,6 +319,7 @@ std::vector<MapRange> readMaps() {
         }
         r.start = static_cast<uintptr_t>(s);
         r.end = static_cast<uintptr_t>(e);
+        r.readable = perms[0] == 'r';
         r.writable = perms[1] == 'w';
         strncpy(r.path, path, sizeof(r.path) - 1);
         out.push_back(r);
@@ -322,113 +328,28 @@ std::vector<MapRange> readMaps() {
     return out;
 }
 
+// maps 快照：addr..addr+len 是否落在连续可读映射内（允许跨相邻映射）
+bool isReadable(const std::vector<MapRange> &maps, uintptr_t addr, size_t len) {
+    if (len == 0) return true;
+    if (addr == 0 || addr + len < addr) return false;
+    uintptr_t needEnd = addr + len;
+    uintptr_t covered = addr;
+    for (const auto &m: maps) {
+        if (!m.readable) continue;
+        if (m.end <= covered || m.start > covered) continue;
+        if (m.start > covered) return false; // 中间有空洞
+        covered = m.end > covered ? m.end : covered;
+        if (covered >= needEnd) return true;
+    }
+    return false;
+}
+
 bool isDataLibPath(const char *path) {
     // 只补丁应用/模块自己的库（都在 /data 下）；系统库保持原行为
-    if (path == nullptr || path[0] != '/' || path[0] == '\0') return false;
+    if (path == nullptr || path[0] == '\0') return false;
     if (strncmp(path, "/data/", 6) != 0) return false;
     if (strstr(path, "libblackbox.so") != nullptr) return false;
     return true;
-}
-
-void writeGotEntry(void **got, void *value, bool wasWritable) {
-    uintptr_t addr = reinterpret_cast<uintptr_t>(got);
-    long pageSize = sysconf(_SC_PAGESIZE);
-    uintptr_t page = addr & static_cast<uintptr_t>(~(pageSize - 1));
-    bool protectDone = false;
-    if (!wasWritable) {
-        protectDone = mprotect(reinterpret_cast<void *>(page), static_cast<size_t>(pageSize),
-                               PROT_READ | PROT_WRITE) == 0;
-    }
-    *got = value;
-    if (protectDone) {
-        // RELRO 段恢复只读；GOT 在加载完成后不再由 linker 写入
-        mprotect(reinterpret_cast<void *>(page), static_cast<size_t>(pageSize), PROT_READ);
-    }
-}
-
-void patchLibrary(uintptr_t base, const std::vector<MapRange> &maps) {
-    auto *ehdr = reinterpret_cast<ElfW(Ehdr) *>(base);
-    if (memcmp(ehdr->e_ident, ELFMAG, SELFMAG) != 0) return;
-    if (ehdr->e_type != ET_DYN) return;
-
-    auto *phdr = reinterpret_cast<ElfW(Phdr) *>(base + ehdr->e_phoff);
-    ElfW(Dyn) *dyn = nullptr;
-    for (int i = 0; i < ehdr->e_phnum; ++i) {
-        if (phdr[i].p_type == PT_DYNAMIC) {
-            dyn = reinterpret_cast<ElfW(Dyn) *>(base + phdr[i].p_vaddr);
-            break;
-        }
-    }
-    if (dyn == nullptr) return;
-
-    ElfW(Addr) jmprel = 0, rela = 0, symtab = 0, strtab = 0;
-    size_t pltrelsz = 0, relasz = 0;
-    for (ElfW(Dyn) *d = dyn; d->d_tag != DT_NULL; ++d) {
-        switch (d->d_tag) {
-            case DT_JMPREL:
-                jmprel = d->d_un.d_ptr;
-                break;
-            case DT_PLTRELSZ:
-                pltrelsz = d->d_un.d_val;
-                break;
-            case DT_RELA:
-                rela = d->d_un.d_ptr;
-                break;
-            case DT_RELASZ:
-                relasz = d->d_un.d_val;
-                break;
-            case DT_SYMTAB:
-                symtab = d->d_un.d_ptr;
-                break;
-            case DT_STRTAB:
-                strtab = d->d_un.d_ptr;
-                break;
-            default:
-                break;
-        }
-    }
-    if ((jmprel == 0 && rela == 0) || symtab == 0 || strtab == 0) return;
-
-    // bionic linker 会把 .dynamic 里的 d_ptr 重定位为绝对地址；老设备上
-    // 可能仍是相对 vaddr，按"小于 base 则加 bias"兜底
-    auto abs = [&](ElfW(Addr) v) -> uintptr_t {
-        return v >= base ? static_cast<uintptr_t>(v) : base + static_cast<uintptr_t>(v);
-    };
-
-    auto *syms = reinterpret_cast<ElfW(Sym) *>(abs(symtab));
-    auto *strs = reinterpret_cast<const char *>(abs(strtab));
-
-    auto scan = [&](uintptr_t relAddr, size_t totalBytes) {
-        size_t count = totalBytes / sizeof(ElfW(Rela));
-        auto *entries = reinterpret_cast<ElfW(Rela) *>(relAddr);
-        for (size_t i = 0; i < count; ++i) {
-            uint32_t type = ELF64_R_TYPE(entries[i].r_info);
-            if (type != R_AARCH64_JUMP_SLOT && type != R_AARCH64_GLOB_DAT) continue;
-            uint32_t symIdx = ELF64_R_SYM(entries[i].r_info);
-            const char *nm = strs + syms[symIdx].st_name;
-            for (auto &e: g_entries) {
-                if (strcmp(nm, e.name) != 0) continue;
-                void **got = reinterpret_cast<void **>(base + entries[i].r_offset);
-                if (*got == e.hook) break; // 已打过
-                if (*e.real == nullptr && *got != nullptr) {
-                    *e.real = *got;
-                }
-                bool writable = false;
-                for (auto &m: maps) {
-                    if (m.start <= reinterpret_cast<uintptr_t>(got) &&
-                        reinterpret_cast<uintptr_t>(got) < m.end) {
-                        writable = m.writable;
-                        break;
-                    }
-                }
-                writeGotEntry(got, e.hook, writable);
-                break;
-            }
-        }
-    };
-
-    if (jmprel != 0 && pltrelsz > 0) scan(abs(jmprel), pltrelsz);
-    if (rela != 0 && relasz > 0) scan(abs(rela), relasz);
 }
 
 } // namespace
@@ -454,6 +375,7 @@ void NativeIOHook::install() {
     for (auto &m: maps) {
         if (m.path[0] == '\0' || !isDataLibPath(m.path)) continue;
         if (m.start >= m.end) continue;
+        if (!isReadable(maps, m.start, SELFMAG)) continue;
         auto *ehdr = reinterpret_cast<ElfW(Ehdr) *>(m.start);
         if (memcmp(ehdr->e_ident, ELFMAG, SELFMAG) != 0) continue;
         bool seen = false;
@@ -463,7 +385,136 @@ void NativeIOHook::install() {
 
     int patched = 0;
     for (uintptr_t base: bases) {
-        patchLibrary(base, maps);
+        auto *ehdr = reinterpret_cast<ElfW(Ehdr) *>(base);
+        if (!isReadable(maps, base, sizeof(ElfW(Ehdr)))) continue;
+        if (memcmp(ehdr->e_ident, ELFMAG, SELFMAG) != 0) continue;
+        if (ehdr->e_type != ET_DYN) continue;
+        if (ehdr->e_phentsize != sizeof(ElfW(Phdr))) continue;
+        if (ehdr->e_phnum == 0 || ehdr->e_phnum > 1024) continue;
+        if (ehdr->e_phoff > 0x100000) continue;
+        size_t phdrBytes = static_cast<size_t>(ehdr->e_phnum) * sizeof(ElfW(Phdr));
+        if (!isReadable(maps, base + ehdr->e_phoff, phdrBytes)) continue;
+
+        auto *phdr = reinterpret_cast<ElfW(Phdr) *>(base + ehdr->e_phoff);
+        ElfW(Dyn) *dyn = nullptr;
+        size_t dynMaxEntries = 0;
+        for (int i = 0; i < ehdr->e_phnum; ++i) {
+            if (phdr[i].p_type == PT_DYNAMIC) {
+                dyn = reinterpret_cast<ElfW(Dyn) *>(base + phdr[i].p_vaddr);
+                dynMaxEntries = phdr[i].p_memsz / sizeof(ElfW(Dyn));
+                break;
+            }
+        }
+        if (dyn == nullptr || dynMaxEntries == 0 || dynMaxEntries > 65536) continue;
+
+        ElfW(Addr) jmprel = 0, rela = 0, symtab = 0, strtab = 0;
+        size_t pltrelsz = 0, relasz = 0;
+        size_t scanned = 0;
+        for (ElfW(Dyn) *d = dyn; scanned < dynMaxEntries; ++d, ++scanned) {
+            if (!isReadable(maps, reinterpret_cast<uintptr_t>(d), sizeof(ElfW(Dyn)))) break;
+            ElfW(Sxword) tag = d->d_tag;
+            if (tag == DT_NULL) break;
+            switch (tag) {
+                case DT_JMPREL:
+                    jmprel = d->d_un.d_ptr;
+                    break;
+                case DT_PLTRELSZ:
+                    pltrelsz = d->d_un.d_val;
+                    break;
+                case DT_RELA:
+                    rela = d->d_un.d_ptr;
+                    break;
+                case DT_RELASZ:
+                    relasz = d->d_un.d_val;
+                    break;
+                case DT_SYMTAB:
+                    symtab = d->d_un.d_ptr;
+                    break;
+                case DT_STRTAB:
+                    strtab = d->d_un.d_ptr;
+                    break;
+                default:
+                    break;
+            }
+        }
+        if ((jmprel == 0 && rela == 0) || symtab == 0 || strtab == 0) continue;
+
+        // bionic linker 会把 .dynamic 里的 d_ptr 重定位为绝对地址；老设备上
+        // 可能仍是相对 vaddr，按"小于 base 则加 bias"兜底
+        auto abs = [&](ElfW(Addr) v) -> uintptr_t {
+            return v >= base ? static_cast<uintptr_t>(v) : base + static_cast<uintptr_t>(v);
+        };
+
+        uintptr_t symtabAddr = abs(symtab);
+        uintptr_t strtabAddr = abs(strtab);
+        if (!isReadable(maps, symtabAddr, sizeof(ElfW(Sym)))) continue;
+        if (!isReadable(maps, strtabAddr, 1)) continue;
+
+        auto *syms = reinterpret_cast<ElfW(Sym) *>(symtabAddr);
+        auto *strs = reinterpret_cast<const char *>(strtabAddr);
+
+        size_t patchCount = 0;
+        auto scan = [&](uintptr_t relAddr, size_t totalBytes) -> bool {
+            if (totalBytes == 0 || totalBytes > 4 * 1024 * 1024) return true;
+            if (!isReadable(maps, relAddr, totalBytes)) return false; // 数据不完整，放弃该库
+            size_t count = totalBytes / sizeof(ElfW(Rela));
+            auto *entries = reinterpret_cast<ElfW(Rela) *>(relAddr);
+            for (size_t i = 0; i < count; ++i) {
+                uint32_t type = ELF64_R_TYPE(entries[i].r_info);
+                if (type != R_AARCH64_JUMP_SLOT && type != R_AARCH64_GLOB_DAT) continue;
+                uint32_t symIdx = ELF64_R_SYM(entries[i].r_info);
+                if (!isReadable(maps, symtabAddr + static_cast<uintptr_t>(symIdx) * sizeof(ElfW(Sym)),
+                                sizeof(ElfW(Sym)))) {
+                    continue;
+                }
+                const char *nm = strs + syms[symIdx].st_name;
+                for (auto &e: g_entries) {
+                    if (isReadable(maps, reinterpret_cast<uintptr_t>(nm), strlen(e.name) + 1) &&
+                        strcmp(nm, e.name) == 0) {
+                        void **got = reinterpret_cast<void **>(base + entries[i].r_offset);
+                        if (!isReadable(maps, reinterpret_cast<uintptr_t>(got), sizeof(void *))) {
+                            break;
+                        }
+                        if (*got == e.hook) break; // 已打过
+                        if (*e.real == nullptr && *got != nullptr) {
+                            *e.real = *got;
+                        }
+                        bool writable = false;
+                        for (auto &m: maps) {
+                            if (m.start <= reinterpret_cast<uintptr_t>(got) &&
+                                reinterpret_cast<uintptr_t>(got) < m.end) {
+                                writable = m.writable;
+                                break;
+                            }
+                        }
+                        uintptr_t gotAddr = reinterpret_cast<uintptr_t>(got);
+                        long pageSize = sysconf(_SC_PAGESIZE);
+                        uintptr_t page = gotAddr & static_cast<uintptr_t>(~(pageSize - 1));
+                        bool protectDone = false;
+                        if (!writable) {
+                            protectDone = mprotect(reinterpret_cast<void *>(page),
+                                                   static_cast<size_t>(pageSize),
+                                                   PROT_READ | PROT_WRITE) == 0;
+                            if (!protectDone) break;
+                        }
+                        *got = e.hook;
+                        if (protectDone) {
+                            // RELRO 段恢复只读；GOT 在加载完成后不再由 linker 写入
+                            mprotect(reinterpret_cast<void *>(page),
+                                     static_cast<size_t>(pageSize), PROT_READ);
+                        }
+                        patchCount++;
+                        break;
+                    }
+                }
+            }
+            return true;
+        };
+
+        bool ok = true;
+        if (jmprel != 0 && pltrelsz > 0) ok = scan(abs(jmprel), pltrelsz);
+        if (ok && rela != 0 && relasz > 0) scan(abs(rela), relasz);
+        (void) patchCount;
         patched++;
     }
     ALOGD("NativeIOHook: patched %d libraries in /data", patched);
