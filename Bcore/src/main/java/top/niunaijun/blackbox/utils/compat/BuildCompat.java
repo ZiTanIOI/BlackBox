@@ -20,6 +20,11 @@ public class BuildCompat {
         return Build.VERSION.SDK_INT >= 31 || (Build.VERSION.SDK_INT >= 30 && Build.VERSION.PREVIEW_SDK_INT == 1);
     }
 
+    // 13
+    public static boolean isTiramisu() {
+        return Build.VERSION.SDK_INT >= 33;
+    }
+
     // 14 (Android 14 起系统严格校验 AttributionSource.uid 与真实 binder uid 一致)
     public static boolean isUpsideDownCake() {
         return Build.VERSION.SDK_INT >= 34 || (Build.VERSION.SDK_INT >= 33 && Build.VERSION.PREVIEW_SDK_INT == 1);

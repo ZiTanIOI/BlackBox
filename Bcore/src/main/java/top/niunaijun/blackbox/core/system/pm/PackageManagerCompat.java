@@ -296,7 +296,9 @@ public class PackageManagerCompat {
             ai.metaData = p.mAppMetaData;
         }
         ai.dataDir = BEnvironment.getDataDir(ai.packageName, userId).getAbsolutePath();
-        if (!p.installOption.isFlag(InstallOption.FLAG_SYSTEM)) {
+        // Xposed 模块即使按系统方式导入也需要指向容器内解压的 lib 目录，
+        // 否则模块加载后 System.loadLibrary 找不到自带的 .so
+        if (!p.installOption.isFlag(InstallOption.FLAG_SYSTEM) || p.installOption.isFlag(InstallOption.FLAG_XPOSED)) {
             ai.nativeLibraryDir = BEnvironment.getAppLibDir(ai.packageName).getAbsolutePath();
         }
         ai.processName = BPackageManagerService.fixProcessName(p.packageName, ai.packageName);

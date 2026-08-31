@@ -39,6 +39,12 @@ public class NativeCore {
 
     public static native void hideXposed();
 
+    /**
+     * 应用或 Xposed 模块在运行期加载了新的 native 库后调用，
+     * 重新扫描并为新库的 GOT 打上 IO 重定向补丁。
+     */
+    public static native void rescanIOHook();
+
     public static void dumpDex(ClassLoader classLoader, String packageName) {
         List<Long> cookies = DexFileCompat.getCookies(classLoader);
         for (Long cookie : cookies) {

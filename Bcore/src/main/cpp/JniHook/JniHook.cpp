@@ -77,6 +77,12 @@ inline static bool ClearFastNativeFlag(char *art_method) {
     return HookEnv.api_level < __ANDROID_API_P__ && ClearAccessFlag(art_method, kAccFastNative);
 }
 
+inline static bool ClearCriticalNativeFlag(char *art_method) {
+    // Android 14+ 会自动给部分 native 方法打 CriticalNative，替换实现走标准 JNI
+    // 约定，不清掉该标记会跳过 JNI 过渡导致崩溃
+    return ClearAccessFlag(art_method, kAccCriticalNative);
+}
+
 static void *GetArtMethod(JNIEnv *env, jclass clazz, jmethodID methodId) {
     if (HookEnv.api_level >= __ANDROID_API_Q__) {
         jclass executable = env->FindClass("java/lang/reflect/Executable");
@@ -130,6 +136,7 @@ bool CheckFlags(void *artMethod) {
         return false;
     }
     ClearFastNativeFlag(method);
+    ClearCriticalNativeFlag(method);
     return true;
 }
 
@@ -294,16 +301,29 @@ void JniHook::InitJniHook(JNIEnv *env, int api_level) {
         flags = flags | kAccPublicApi;
     }
 
+    // Android 14+ 会给符合条件的 native 方法（如无参无返回值）自动补上
+    // FastNative/CriticalNative 优化位，精确匹配会失败，按候选值匹配
+    const uint32_t runtime_extra[] = {0, kAccFastNative, kAccCriticalNative,
+                                      kAccFastNative | kAccCriticalNative};
     char *start = reinterpret_cast<char *>(artMethod);
     for (int i = 1; i < HookEnv.art_method_size; ++i) {
         auto value = *(uint32_t *) (start + i * sizeof(uint32_t));
-        if (value == flags) {
-            HookEnv.art_method_flags_offset = i * sizeof(uint32_t);
-            break;
+        for (uint32_t extra : runtime_extra) {
+            if (value == (flags | extra)) {
+                HookEnv.art_method_flags_offset = i * sizeof(uint32_t);
+                break;
+            }
         }
+        if (HookEnv.art_method_flags_offset != 0)
+            break;
     }
     if (HookEnv.art_method_flags_offset == 0) {
-        ALOGE("InitJniHook: calc art_method_flags_offset failed, skip jni hook");
+        ALOGE("InitJniHook: calc art_method_flags_offset failed, skip jni hook, expected=0x%08x size=%u",
+              flags, HookEnv.art_method_size);
+        auto words = reinterpret_cast<uint32_t *>(artMethod);
+        for (unsigned int i = 0; i < HookEnv.art_method_size / sizeof(uint32_t); ++i) {
+            ALOGE("  artMethod[%u] = 0x%08x", i, words[i]);
+        }
         return;
     }
 

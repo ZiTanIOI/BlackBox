@@ -12,6 +12,7 @@ import top.niunaijun.blackbox.fake.service.IAccessibilityManagerProxy;
 import top.niunaijun.blackbox.fake.service.IAccountManagerProxy;
 import top.niunaijun.blackbox.fake.service.IActivityClientProxy;
 import top.niunaijun.blackbox.fake.service.IActivityManagerProxy;
+import top.niunaijun.blackbox.fake.service.ILocaleManagerProxy;
 import top.niunaijun.blackbox.fake.service.IActivityTaskManagerProxy;
 import top.niunaijun.blackbox.fake.service.IAlarmManagerProxy;
 import top.niunaijun.blackbox.fake.service.IAppOpsManagerProxy;
@@ -121,6 +122,10 @@ public class HookManager {
             // 11.0
             if (BuildCompat.isR()) {
                 addInjector(new IPermissionManagerProxy());
+            }
+            // 13.0
+            if (BuildCompat.isTiramisu()) {
+                addInjector(new ILocaleManagerProxy());
             }
             // 10.0
             if (BuildCompat.isQ()) {

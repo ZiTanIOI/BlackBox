@@ -9,6 +9,7 @@
 #include <JniHook/JniHook.h>
 #include <Hook/VMClassLoaderHook.h>
 #include <Hook/UnixFileSystemHook.h>
+#include <Hook/NativeIOHook.h>
 #include <Hook/BinderHook.h>
 #include <Hook/RuntimeHook.h>
 #include "Utils/HexDump.h"
@@ -104,12 +105,18 @@ void addIORule(JNIEnv *env, jclass clazz, jstring target_path,
 void enableIO(JNIEnv *env, jclass clazz) {
     IO::init(env);
     nativeHook(env);
+    NativeIOHook::install();
+}
+
+void rescanIOHook(JNIEnv *env, jclass clazz) {
+    NativeIOHook::install();
 }
 
 static JNINativeMethod gMethods[] = {
         {"hideXposed", "()V",                                     (void *) hideXposed},
         {"addIORule",  "(Ljava/lang/String;Ljava/lang/String;)V", (void *) addIORule},
         {"enableIO",   "()V",                                     (void *) enableIO},
+        {"rescanIOHook", "()V",                                   (void *) rescanIOHook},
         {"init",       "(I)V",                                    (void *) init},
 };
 

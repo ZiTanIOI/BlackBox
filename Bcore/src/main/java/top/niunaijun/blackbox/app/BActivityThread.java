@@ -19,6 +19,7 @@ import android.content.pm.ServiceInfo;
 import android.os.Binder;
 import android.os.Build;
 import android.os.ConditionVariable;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.IInterface;
@@ -54,6 +55,9 @@ import black.android.graphics.BRCompatibility;
 import black.android.security.net.config.BRNetworkSecurityConfigProvider;
 import black.com.android.internal.content.BRReferrerIntent;
 import black.dalvik.system.BRVMRuntime;
+import top.canyie.pine.Pine;
+import top.canyie.pine.callback.MethodHook;
+import top.canyie.pine.xposed.ModuleClassLoader;
 import top.canyie.pine.xposed.PineXposed;
 import top.niunaijun.blackbox.BlackBoxCore;
 import top.niunaijun.blackbox.app.configuration.AppLifecycleCallback;
@@ -62,6 +66,7 @@ import top.niunaijun.blackbox.core.CrashHandler;
 import top.niunaijun.blackbox.core.IBActivityThread;
 import top.niunaijun.blackbox.core.IOCore;
 import top.niunaijun.blackbox.core.NativeCore;
+import top.niunaijun.blackbox.core.env.BEnvironment;
 import top.niunaijun.blackbox.core.env.VirtualRuntime;
 import top.niunaijun.blackbox.core.system.user.BUserHandle;
 import top.niunaijun.blackbox.entity.AppConfig;
@@ -72,6 +77,7 @@ import top.niunaijun.blackbox.fake.delegate.ContentProviderDelegate;
 import top.niunaijun.blackbox.fake.frameworks.BXposedManager;
 import top.niunaijun.blackbox.fake.hook.HookManager;
 import top.niunaijun.blackbox.fake.service.HCallbackProxy;
+import top.niunaijun.blackbox.utils.NativeUtils;
 import top.niunaijun.blackbox.utils.Reflector;
 import top.niunaijun.blackbox.utils.Slog;
 import top.niunaijun.blackbox.utils.compat.ActivityManagerCompat;
@@ -145,6 +151,19 @@ public class BActivityThread extends IBActivityThread.Stub {
 
     public static Application getApplication() {
         return currentActivityThread().mInitialApplication;
+    }
+
+    /**
+     * 虚拟应用 Application 在极早期调用（如 Application attach 完成前收到广播/绑定请求）
+     * 时可能尚未赋值，直接 getApplication().getClassLoader() 会 NPE。
+     * 此时退回宿主 ClassLoader，保证 BlackBox 自身 record 类能正常反序列化。
+     */
+    public static ClassLoader getAppClassLoader() {
+        Application application = getApplication();
+        if (application != null) {
+            return application.getClassLoader();
+        }
+        return BlackBoxCore.getContext().getClassLoader();
     }
 
     public static int getAppPid() {
@@ -341,6 +360,7 @@ public class BActivityThread extends IBActivityThread.Stub {
         NativeCore.init(Build.VERSION.SDK_INT);
         assert packageContext != null;
         IOCore.get().enableRedirect(packageContext);
+        fakeStorageManagerStatus();
 
         AppBindData bindData = new AppBindData();
         bindData.appInfo = applicationInfo;
@@ -423,6 +443,29 @@ public class BActivityThread extends IBActivityThread.Stub {
         }
     }
 
+    /**
+     * 容器把整个外部存储重定向进宿主私有目录，实际读写不受系统沙盒限制；
+     * 但 Android 11+ 应用常用 Environment.isExternalStorageManager() 判断
+     * MANAGE_EXTERNAL_STORAGE，该状态走系统 appops，虚拟授权满足不了，
+     * 这里直接让该方法返回 true，应用即认为已拥有全部文件访问权限。
+     */
+    private void fakeStorageManagerStatus() {
+        if (!BuildCompat.isR()) {
+            return;
+        }
+        try {
+            Method method = Environment.class.getMethod("isExternalStorageManager");
+            Pine.hook(method, new MethodHook() {
+                @Override
+                public void beforeCall(Pine.CallFrame callFrame) {
+                    callFrame.setResult(true);
+                }
+            });
+        } catch (Throwable e) {
+            Slog.e(TAG, "fake isExternalStorageManager failed", e);
+        }
+    }
+
     public void loadXposed(Context context) {
         String vPackageName = getAppPackageName();
         String vProcessName = getAppProcessName();
@@ -438,10 +481,30 @@ public class BActivityThread extends IBActivityThread.Stub {
                     continue;
                 }
                 try {
-                    PineXposed.loadModule(new File(installedModule.getApplication().sourceDir));
+                    ApplicationInfo moduleApp = installedModule.getApplication();
+                    File moduleFile = new File(moduleApp.sourceDir);
+                    // ModuleClassLoader 默认只搜系统库路径；模块自带 .so（甚至从系统导入的
+                    // 模块在安装时不解压 native 库）会让 System.loadLibrary 抛
+                    // UnsatisfiedLinkError，入口类加载失败导致整个模块静默失效
+                    File moduleLibDir = BEnvironment.getAppLibDir(installedModule.packageName);
+                    String[] libs = moduleLibDir.list();
+                    if (libs == null || libs.length == 0) {
+                        try {
+                            NativeUtils.copyNativeLib(moduleFile, moduleLibDir);
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                    ModuleClassLoader moduleClassLoader = new ModuleClassLoader(moduleFile.getAbsolutePath(),
+                            moduleLibDir.getAbsolutePath(), PineXposed.class.getClassLoader());
+                    PineXposed.loadOpenedModule(moduleFile.getAbsolutePath(), moduleClassLoader, false);
                 } catch (Throwable e) {
                     e.printStackTrace();
                 }
+            }
+            // 模块 .so 在入口类初始化时加载，需要为它补打 IO 重定向
+            try {
+                NativeCore.rescanIOHook();
+            } catch (Throwable ignored) {
             }
             try {
                 PineXposed.onPackageLoad(vPackageName, vProcessName, context.getApplicationInfo(), isFirstApplication, context.getClassLoader());
@@ -597,6 +660,12 @@ public class BActivityThread extends IBActivityThread.Stub {
     }
 
     private void onAfterApplicationOnCreate(String packageName, String processName, Application application) {
+        // 应用一般在 attach/onCreate 里 System.loadLibrary 自己的 .so，
+        // 新库的 GOT 需要重新打上 IO 重定向补丁
+        try {
+            NativeCore.rescanIOHook();
+        } catch (Throwable ignored) {
+        }
         for (AppLifecycleCallback appLifecycleCallback : BlackBoxCore.get().getAppLifecycleCallbacks()) {
             appLifecycleCallback.afterApplicationOnCreate(packageName, processName, application, BActivityThread.getUserId());
         }

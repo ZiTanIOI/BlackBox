@@ -18,6 +18,17 @@ HOOK_JNI(jstring, canonicalize0, JNIEnv *env, jobject obj, jstring path) {
 }
 
 /*
+ * Android 14+ 新增重载，原 (String) 版不再是 native 方法
+ * Class:     java_io_UnixFileSystem
+ * Method:    canonicalize0
+ * Signature: (Ljava/lang/String;Z)Ljava/lang/String;
+ */
+HOOK_JNI(jstring, canonicalize0Z, JNIEnv *env, jobject obj, jstring path, jboolean resolve) {
+    jstring redirect = IO::redirectPath(env, path);
+    return orig_canonicalize0Z(env, obj, redirect, resolve);
+}
+
+/*
  * Class:     java_io_UnixFileSystem
  * Method:    getBooleanAttributes0
  * Signature: (Ljava/lang/String;)I
@@ -112,9 +123,15 @@ void UnixFileSystemHook::init(JNIEnv *env) {
     const char *className = "java/io/UnixFileSystem";
     JniHook::HookJniFun(env, className, "canonicalize0", "(Ljava/lang/String;)Ljava/lang/String;",
                         (void *) new_canonicalize0, (void **) (&orig_canonicalize0), false);
-//    JniHook::HookJniFun(env, className, "getBooleanAttributes0", "(Ljava/lang/String;)I",
-//                        (void *) new_getBooleanAttributes0,
-//                        (void **) (&orig_getBooleanAttributes0), false);
+    // Android 14+ 的 native 版本重载，旧签名注册失败时走这里
+    JniHook::HookJniFun(env, className, "canonicalize0", "(Ljava/lang/String;Z)Ljava/lang/String;",
+                        (void *) new_canonicalize0Z, (void **) (&orig_canonicalize0Z), false);
+    // File.exists()/isDirectory()/canRead()/canWrite() 走这里。必须与 createDirectory0
+    // 保持同一套重定向，否则 File.mkdirs() 内部 exists() 看到真实路径为 false、
+    // mkdir() 又在重定向目录里撞 EEXIST，最终整个 mkdirs 直接返回 false 且不建目录
+    JniHook::HookJniFun(env, className, "getBooleanAttributes0", "(Ljava/lang/String;)I",
+                        (void *) new_getBooleanAttributes0,
+                        (void **) (&orig_getBooleanAttributes0), false);
     JniHook::HookJniFun(env, className, "getLastModifiedTime0", "(Ljava/io/File;)J",
                         (void *) new_getLastModifiedTime0, (void **) (&orig_getLastModifiedTime0),
                         false);

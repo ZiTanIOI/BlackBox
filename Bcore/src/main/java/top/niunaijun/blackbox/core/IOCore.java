@@ -9,6 +9,7 @@ import android.os.Process;
 import android.text.TextUtils;
 
 import java.io.File;
+import java.util.Locale;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -126,6 +127,18 @@ public class IOCore {
 
             if (BlackBoxCore.getContext().getExternalCacheDir() != null && context.getExternalCacheDir() != null) {
                 File external = BEnvironment.getExternalUserDir(BActivityThread.getUserId());
+
+                // 真机上系统会为应用预建 Android/data/<pkg>、Android/obb/<pkg> 及其
+                // files/cache 子目录，容器里没人做这件事，应用或模块若不 mkdirs 直接
+                // open 外部文件会得到 ENOENT
+                try {
+                    String pkg = context.getPackageName();
+                    FileUtils.mkdirs(BEnvironment.getExternalDataDir(pkg, BActivityThread.getUserId()).getAbsolutePath());
+                    FileUtils.mkdirs(new File(external, String.format(Locale.CHINA, "Android/data/%s/files", pkg)).getAbsolutePath());
+                    FileUtils.mkdirs(new File(external, String.format(Locale.CHINA, "Android/data/%s/cache", pkg)).getAbsolutePath());
+                    FileUtils.mkdirs(new File(external, String.format(Locale.CHINA, "Android/obb/%s", pkg)).getAbsolutePath());
+                } catch (Exception ignored) {
+                }
 
                 // sdcard
                 rule.put("/sdcard", external.getAbsolutePath());

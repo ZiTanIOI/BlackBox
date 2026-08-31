@@ -287,6 +287,19 @@ public class IActivityManagerProxy extends ClassInvocationStub {
         }
     }
 
+    // Android 16：ContextImpl 改调 bindServiceInstance（原 bindIsolatedService）。
+    // 未 hook 时虚拟服务 Intent 会透传给真实 AMS 被拒（返回 -1），
+    // ContextImpl 转成 SecurityException: Not allowed to bind to service
+    @ProxyMethod("bindServiceInstance")
+    public static class BindServiceInstance extends BindService {
+        @Override
+        protected Object beforeHook(Object who, Method method, Object[] args) throws Throwable {
+            // instanceName
+            args[6] = null;
+            return super.beforeHook(who, method, args);
+        }
+    }
+
     @ProxyMethod("unbindService")
     public static class UnbindService extends MethodHook {
 
@@ -414,7 +427,7 @@ public class IActivityManagerProxy extends ClassInvocationStub {
             String resolvedType = (String) args[intentIndex + 1];
             Intent proxyIntent = BlackBoxCore.getBActivityManager().sendBroadcast(intent, resolvedType, BActivityThread.getUserId());
             if (proxyIntent != null) {
-                proxyIntent.setExtrasClassLoader(BActivityThread.getApplication().getClassLoader());
+                proxyIntent.setExtrasClassLoader(BActivityThread.getAppClassLoader());
                 ProxyBroadcastRecord.saveStub(proxyIntent, intent, BActivityThread.getUserId());
                 args[intentIndex] = proxyIntent;
             }
