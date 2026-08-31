@@ -77,6 +77,7 @@ import top.niunaijun.blackbox.fake.delegate.ContentProviderDelegate;
 import top.niunaijun.blackbox.fake.frameworks.BXposedManager;
 import top.niunaijun.blackbox.fake.hook.HookManager;
 import top.niunaijun.blackbox.fake.service.HCallbackProxy;
+import top.niunaijun.blackbox.hotfix.HotfixManager;
 import top.niunaijun.blackbox.utils.NativeUtils;
 import top.niunaijun.blackbox.utils.Reflector;
 import top.niunaijun.blackbox.utils.Slog;
@@ -385,6 +386,10 @@ public class BActivityThread extends IBActivityThread.Stub {
         Application application;
         try {
             onBeforeCreateApplication(packageName, processName, packageContext);
+            // 业务类尚未加载，把补丁 dex 前插到应用类加载器的 dexElements 头部
+            if (packageContext != null) {
+                HotfixManager.inject(packageContext.getClassLoader(), packageName, BActivityThread.getUserId());
+            }
             application = BRLoadedApk.get(loadedApk).makeApplication(false, null);
             mInitialApplication = application;
             BRActivityThread.get(BlackBoxCore.mainThread())._set_mInitialApplication(mInitialApplication);

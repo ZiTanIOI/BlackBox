@@ -7,6 +7,7 @@ import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.widget.PopupMenu
 import androidx.core.os.bundleOf
 import androidx.fragment.app.Fragment
@@ -16,6 +17,7 @@ import androidx.recyclerview.widget.ItemTouchHelper
 import cbfg.rvadapter.RVAdapter
 import com.afollestad.materialdialogs.MaterialDialog
 import top.niunaijun.blackbox.BlackBoxCore
+import top.niunaijun.blackbox.core.env.BEnvironment
 import top.niunaijun.blackboxa.R
 import top.niunaijun.blackboxa.bean.AppInfo
 import top.niunaijun.blackboxa.databinding.FragmentAppsBinding
@@ -25,6 +27,7 @@ import top.niunaijun.blackboxa.util.inflate
 import top.niunaijun.blackboxa.util.toast
 import top.niunaijun.blackboxa.view.base.LoadingActivity
 import top.niunaijun.blackboxa.view.main.MainActivity
+import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.math.abs
 
@@ -46,6 +49,18 @@ class AppsFragment : Fragment() {
     private val viewBinding: FragmentAppsBinding by inflate()
 
     private var popupMenu: PopupMenu? = null
+
+    private var hotfixPackage: String? = null
+
+    private val patchPicker =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            val pkg = hotfixPackage
+            if (uri != null && pkg != null) {
+                // 结果在 onStart 事务分发期间回调，这里不能同步操作 FragmentManager（showLoading），
+                // 拷贝完成后由 resultLiveData 弹 toast
+                viewModel.saveHotfixPatch(userID, pkg, uri)
+            }
+        }
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -185,6 +200,10 @@ class AppsFragment : Fragment() {
                             stopApk(data)
                         }
 
+                        R.id.app_hotfix -> {
+                            showHotfixDialog(data)
+                        }
+
                         R.id.app_shortcut -> {
                             ShortcutUtil.createShortcut(requireContext(), userID, data)
                         }
@@ -283,6 +302,39 @@ class AppsFragment : Fragment() {
                 viewModel.clearApkData(info.packageName, userID)
             }
             negativeButton(R.string.cancel)
+        }
+    }
+
+    /**
+     * 热修复配置：选择补丁 dex/apk/jar，重启分身后生效
+     * @param info AppInfo
+     */
+    private fun showHotfixDialog(info: AppInfo) {
+        hotfixPackage = info.packageName
+        val patch = BEnvironment.getHotfixPatchFile(userID, info.packageName)
+        val message = if (patch.isFile) {
+            val time =
+                SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(patch.lastModified()))
+            getString(R.string.hotfix_dialog_hint_exist, patch.name, "${patch.length() / 1024} KB", time)
+        } else {
+            getString(R.string.hotfix_dialog_hint_none)
+        }
+        MaterialDialog(requireContext()).show {
+            title(R.string.hotfix_dialog_title)
+            message(text = message)
+            positiveButton(R.string.hotfix_pick) { pickHotfixPatch() }
+            negativeButton(R.string.hotfix_clear) {
+                viewModel.clearHotfixPatch(userID, info.packageName)
+            }
+        }
+    }
+
+    private fun pickHotfixPatch() {
+        if (hotfixPackage == null) return
+        try {
+            patchPicker.launch(arrayOf("*/*"))
+        } catch (e: Exception) {
+            toast(R.string.hotfix_pick_fail)
         }
     }
 

@@ -8,8 +8,12 @@ import androidx.core.content.edit
 import androidx.lifecycle.MutableLiveData
 import top.niunaijun.blackbox.BlackBoxCore
 import top.niunaijun.blackbox.BlackBoxCore.getPackageManager
+import top.niunaijun.blackbox.core.env.BEnvironment
+import top.niunaijun.blackbox.hotfix.HotfixManager
 import top.niunaijun.blackbox.utils.AbiUtils
+import top.niunaijun.blackbox.utils.FileUtils
 import top.niunaijun.blackboxa.R
+import top.niunaijun.blackboxa.app.App
 import top.niunaijun.blackboxa.app.AppManager
 import top.niunaijun.blackboxa.bean.AppInfo
 import top.niunaijun.blackboxa.bean.InstalledAppBean
@@ -198,6 +202,45 @@ class AppsRepository {
             resultLiveData.postValue(getString(R.string.clear_success))
         } catch (e: Exception) {
             resultLiveData.postValue(getString(R.string.clear_fail))
+        }
+    }
+
+    /**
+     * 热修复补丁：宿主把用户选择的 dex 拷进 blackbox 根目录 hotfix/u<userId>/<pkg>.dex，
+     * 分身进程每次启动时由 HotfixManager 前插到应用类加载器的 dexElements
+     */
+    fun getHotfixPatch(userId: Int, packageName: String): File? {
+        val patch = BEnvironment.getHotfixPatchFile(userId, packageName)
+        return if (patch.isFile) patch else null
+    }
+
+    fun saveHotfixPatch(userId: Int, packageName: String, uri: Uri, resultLiveData: MutableLiveData<String>) {
+        try {
+            val patch = BEnvironment.getHotfixPatchFile(userId, packageName)
+            FileUtils.mkdirs(patch.parentFile!!.absolutePath)
+            App.getContext().contentResolver.openInputStream(uri)!!.use { input ->
+                patch.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            // 覆盖旧补丁后清掉旧 odex 缓存，避免新旧内容不一致
+            HotfixManager.clearOdexCache(packageName, userId)
+            resultLiveData.postValue(getString(R.string.hotfix_saved))
+        } catch (e: Exception) {
+            resultLiveData.postValue(getString(R.string.hotfix_save_fail, e.message ?: e.javaClass.simpleName))
+        }
+    }
+
+    fun clearHotfixPatch(userId: Int, packageName: String, resultLiveData: MutableLiveData<String>) {
+        try {
+            if (!BEnvironment.getHotfixPatchFile(userId, packageName).exists()) {
+                resultLiveData.postValue(getString(R.string.hotfix_none))
+                return
+            }
+            HotfixManager.clearPatch(packageName, userId)
+            resultLiveData.postValue(getString(R.string.hotfix_cleared))
+        } catch (e: Exception) {
+            resultLiveData.postValue(getString(R.string.hotfix_clear_fail))
         }
     }
 

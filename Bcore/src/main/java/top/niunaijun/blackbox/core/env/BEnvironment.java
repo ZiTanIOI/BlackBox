@@ -74,6 +74,22 @@ public class BEnvironment {
         return new File(getSystemDir(), "fake-location.conf");
     }
 
+    public static File getHotfixDir() {
+        return new File(sVirtualRoot, "hotfix");
+    }
+
+    public static File getHotfixDir(int userId) {
+        return new File(getHotfixDir(), String.format(Locale.CHINA, "u%d", userId));
+    }
+
+    public static File getHotfixPatchFile(int userId, String packageName) {
+        return new File(getHotfixDir(userId), packageName + ".dex");
+    }
+
+    public static File getHotfixOdexDir(int userId, String packageName) {
+        return new File(getHotfixDir(userId), packageName + "_odex");
+    }
+
     public static File getPackageConf(String packageName) {
         return new File(getAppDir(packageName), "package.conf");
     }

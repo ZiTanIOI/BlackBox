@@ -1,5 +1,6 @@
 package top.niunaijun.blackboxa.view.apps
 
+import android.net.Uri
 import androidx.lifecycle.MutableLiveData
 import top.niunaijun.blackboxa.bean.AppInfo
 import top.niunaijun.blackboxa.data.AppsRepository
@@ -43,6 +44,18 @@ class AppsViewModel(private val repo: AppsRepository) : BaseViewModel() {
     fun clearApkData(packageName: String,userID: Int){
         launchOnUI {
             repo.clearApkData(packageName,userID,resultLiveData)
+        }
+    }
+
+    fun saveHotfixPatch(userId: Int, packageName: String, uri: Uri) {
+        launchOnUI {
+            repo.saveHotfixPatch(userId, packageName, uri, resultLiveData)
+        }
+    }
+
+    fun clearHotfixPatch(userId: Int, packageName: String) {
+        launchOnUI {
+            repo.clearHotfixPatch(userId, packageName, resultLiveData)
         }
     }
 
