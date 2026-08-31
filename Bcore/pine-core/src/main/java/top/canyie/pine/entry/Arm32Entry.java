@@ -5,7 +5,7 @@ import android.os.Build;
 import top.canyie.pine.Pine;
 import top.canyie.pine.PineConfig;
 import top.canyie.pine.utils.Primitives;
-import top.canyie.pine.utils.Three;
+import top.canyie.pine.utils.ThreeTuple;
 
 /**
  * @author canyie
@@ -20,6 +20,13 @@ public final class Arm32Entry {
     // https://android-review.googlesource.com/c/platform/art/+/109033
     // TODO: Use different entries for hardfp and softfp
     private static final boolean USE_HARDFP = PineConfig.sdkLevel >= Build.VERSION_CODES.M;
+
+    // For some reasons, starting from Android 12, if we need to pass a long argument when
+    // only one core register (r3) is available, the register won't be used and art directly
+    // pushes all parts of the argument onto stack. I've forgot whether I checked oatdump from
+    // old versions or not, but related tests don't fail. To avoid regressions, let's check it :)
+    private static final boolean DISALLOW_LONG_CROSS_CR_AND_STACK = PineConfig.sdkLevel >= 31 /* VERSION_CODES.S, compileSdk=30 */;
+
     private Arm32Entry() {
     }
 
@@ -78,10 +85,10 @@ public final class Arm32Entry {
         int extras = (int) Pine.cloneExtras(originExtras);
         Pine.log("handleBridge: artMethod=%#x originExtras=%#x extras=%#x sp=%#x", artMethod, originExtras, extras, sp);
         Pine.HookRecord hookRecord = Pine.getHookRecord(artMethod);
-        Three<int[], int[], float[]> three = getArgs(hookRecord, extras, sp);
-        int[] coreRegisters = three.a;
-        int[] stack = three.b;
-        float[] fpRegisters = three.c;
+        ThreeTuple<int[], int[], float[]> threeTuple = getArgs(hookRecord, extras, sp);
+        int[] coreRegisters = threeTuple.a;
+        int[] stack = threeTuple.b;
+        float[] fpRegisters = threeTuple.c;
         long thread = Pine.currentArtThread0();
 
         Object receiver;
@@ -164,6 +171,10 @@ public final class Arm32Entry {
                         stackIndex += 2;
                         continue;
                     }
+                    if (crIndex == 2 && DISALLOW_LONG_CROSS_CR_AND_STACK) {
+                        // Do not take the low part from the core register (r3)
+                        crIndex = CR_SIZE;
+                    }
                     if (crIndex < coreRegisters.length) {
                         l = coreRegisters[crIndex++];
                     } else {
@@ -207,30 +218,48 @@ public final class Arm32Entry {
         return Pine.handleCall(hookRecord, receiver, args);
     }
 
-    private static Three<int[], int[], float[]> getArgs(Pine.HookRecord hookRecord, int extras, int sp) {
-        // TODO: Cache these values
-        int crLength = hookRecord.isStatic ? 0 : 1/*this*/;
-        int stackLength = crLength;
-        int floatLength = 0, doubleLength = 0;
-        Class<?>[] paramTypes = hookRecord.paramTypes;
-        for (Class<?> paramType : paramTypes) {
-            if (paramType == double.class) {
-                doubleLength++;
-                stackLength++;
-            } else if (paramType == float.class) {
-                floatLength++;
-            } else {
-                if (paramType == long.class) {
-                    if (crLength == 0) crLength++; // first non-fp arg, r1 will be skipped
-                    if (crLength < CR_SIZE) crLength++;
+    private static ThreeTuple<int[], int[], float[]> getArgs(Pine.HookRecord hookRecord, int extras, int sp) {
+        int crLength;
+        int stackLength;
+        int fpLength;
+
+        if (hookRecord.paramTypesCache == null) {
+            stackLength = crLength = hookRecord.isStatic ? 0 : 1/*this*/;
+
+            int floatLength = 0, doubleLength = 0;
+            Class<?>[] paramTypes = hookRecord.paramTypes;
+            for (Class<?> paramType : paramTypes) {
+                if (paramType == double.class) {
+                    doubleLength++;
                     stackLength++;
-                    // Fall-through to take of the high part.
+                } else if (paramType == float.class) {
+                    floatLength++;
+                } else {
+                    if (paramType == long.class) {
+                        if (crLength == 0) crLength++; // first non-fp arg, r1 will be skipped
+                        if (crLength < CR_SIZE) crLength++;
+                        stackLength++;
+                        // Fall-through to take of the high part.
+                    }
+                    if (crLength < CR_SIZE) crLength++;
                 }
-                if (crLength < CR_SIZE) crLength++;
+                stackLength++;
             }
-            stackLength++;
+            fpLength = (doubleLength * 2) + floatLength;
+
+            // Expose paramTypesCache after cache initialized to prevent possible race conditions
+            ParamTypesCache cache = new ParamTypesCache();
+            cache.crLength = crLength;
+            cache.stackLength = stackLength;
+            cache.fpLength = fpLength;
+            hookRecord.paramTypesCache = cache;
+        } else {
+            ParamTypesCache cache = (ParamTypesCache) hookRecord.paramTypesCache;
+            crLength = cache.crLength;
+            stackLength = cache.stackLength;
+            fpLength = cache.fpLength;
         }
-        int fpLength = (doubleLength * 2) + floatLength;
+
         float[] fpRegisters = EMPTY_FLOAT_ARRAY;
         if (USE_HARDFP) {
             if (fpLength != 0) {
@@ -243,6 +272,12 @@ public final class Arm32Entry {
         int[] coreRegisters = crLength != 0 ? new int[crLength] : EMPTY_INT_ARRAY;
         int[] stack = stackLength != 0 ? new int[stackLength] : EMPTY_INT_ARRAY;
         Pine.getArgsArm32(extras, sp, coreRegisters, stack, fpRegisters);
-        return new Three<>(coreRegisters, stack, fpRegisters);
+        return new ThreeTuple<>(coreRegisters, stack, fpRegisters);
+    }
+
+    private static class ParamTypesCache {
+        int crLength;
+        int stackLength;
+        int fpLength;
     }
 }

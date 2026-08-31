@@ -1,8 +1,10 @@
 package top.canyie.pine;
 
-import android.annotation.SuppressLint;
 import android.os.Build;
 import android.util.Log;
+
+import top.canyie.pine.callback.MethodHook;
+import top.canyie.pine.entry.Arm64MarshmallowEntry;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
@@ -12,12 +14,9 @@ import java.lang.reflect.Modifier;
 import java.lang.reflect.Proxy;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-
-import top.canyie.pine.callback.MethodHook;
 
 /**
  * The bridge class provides main APIs for you.
@@ -35,7 +34,7 @@ public final class Pine {
     private static final Map<Long, HookRecord> sHookRecords = new ConcurrentHashMap<>();
     private static final Object sHookLock = new Object();
     private static int arch;
-    private static volatile int hookMode = HookMode.AUTO;
+    private static volatile int hookMode;
     private static HookHandler sHookHandler = new HookHandler() {
         @Override
         public MethodHook.Unhook handleHook(HookRecord hookRecord, MethodHook hook, int modifiers,
@@ -44,7 +43,7 @@ public final class Pine {
                 hookNewMethod(hookRecord, modifiers, canInitDeclaringClass);
 
             if (hook == null) {
-                // This can only happens when the up handler pass null manually,
+                // This can only happen when the up handler pass null manually,
                 // just return null and let the up to do remaining everything
                 return null;
             }
@@ -59,12 +58,21 @@ public final class Pine {
 
     private static HookListener sHookListener;
 
+    /** Internal API, used by enhances library. DO NOT USE THEM. */
+    public static long openElf, findElfSymbol, closeElf, getMethodDeclaringClass, syncMethodEntry,
+            suspendVM, resumeVM;
+
     private Pine() {
         throw new RuntimeException("Use static methods");
     }
 
     /**
      * Initialize the Pine library if not initialized.
+     * WARNING: Calling this API will disable hidden api policy when
+     * {@code PineConfig.disableHiddenApiPolicy} or {@code PineConfig.disableHiddenApiPolicyForPlatformDomain}.
+     * Due to an ART bug, if a thread changes hidden api policy while another thread is calling
+     * a API that lists members of a class, a out-of-bounds write may occur and causes crashes.
+     * See <a href="https://github.com/tiann/FreeReflection/issues/60">...</a> for more details.
      */
     public static void ensureInitialized() {
         if (initialized) return;
@@ -83,36 +91,16 @@ public final class Pine {
         return initialized;
     }
 
-    // https://cs.android.com/androidx/platform/frameworks/support/+/androidx-main:core/core/src/main/java/androidx/core/os/BuildCompat.java;l=49;drc=f8ab4c3030c3fbadca32a9593c522c89a9f2cadf
-    private static boolean isAtLeastPreReleaseCodename(String codename) {
-        final String buildCodename = Build.VERSION.CODENAME.toUpperCase(Locale.ROOT);
-
-        // Special case "REL", which means the build is not a pre-release build.
-        if ("REL".equals(buildCodename)) {
-            return false;
-        }
-
-        return buildCodename.compareTo(codename.toUpperCase(Locale.ROOT)) >= 0;
-    }
-
-    @SuppressLint("ObsoleteSdkInt") private static void initialize() {
+    private static void initialize() {
         int sdkLevel = PineConfig.sdkLevel;
         if (sdkLevel < Build.VERSION_CODES.KITKAT)
             throw new RuntimeException("Unsupported android sdk level " + sdkLevel);
-        else if (sdkLevel > Build.VERSION_CODES.R) {
-            Log.w(TAG, "Android version too high, not tested now...");
-            if (sdkLevel >= 32 && isAtLeastPreReleaseCodename("Tiramisu")) {
-                // Android 13 (Tiramisu) Preview
-                sdkLevel = 32 + 1;
-            } else if (sdkLevel == 31 && isAtLeastPreReleaseCodename("Sv2")) {
-                // Android 12.1 (SL) Preview
-                sdkLevel = 32;
-            }
-        }
 
         String vmVersion = System.getProperty("java.vm.version");
         if (vmVersion == null || !vmVersion.startsWith("2"))
             throw new RuntimeException("Only supports ART runtime");
+
+        hookMode = sdkLevel < Build.VERSION_CODES.O ? HookMode.INLINE_WITHOUT_JIT : HookMode.REPLACEMENT;
 
         try {
             LibLoader libLoader = PineConfig.libLoader;
@@ -149,8 +137,10 @@ public final class Pine {
             // Use Class.forName() to ensure entry class is initialized.
             Class<?> entryClass = Class.forName(entryClassName, true, Pine.class.getClassLoader());
 
-            String[] bridgeMethodNames = {"voidBridge", "intBridge", "longBridge", "doubleBridge", "floatBridge",
-                    "booleanBridge", "byteBridge", "charBridge", "shortBridge", "objectBridge"};
+            String[] bridgeMethodNames = {
+                    "voidBridge", "intBridge", "longBridge", "doubleBridge", "floatBridge",
+                    "booleanBridge", "byteBridge", "charBridge", "shortBridge", "objectBridge"
+            };
 
             for (String bridgeMethodName : bridgeMethodNames) {
                 Method bridge = entryClass.getDeclaredMethod(bridgeMethodName, paramTypes);
@@ -163,18 +153,36 @@ public final class Pine {
     }
 
     /**
-     * Set how Pine to hook method.
-     * @param newHookMode One of {@code Pine.HookMode.AUTO}, {@code Pine.HookMode.INLINE} or
-     *                    {@code Pine.HookMode.REPLACEMENT}.
+     * Set the way how Pine hook method.
+     * @param newHookMode One of {@code Pine.HookMode.AUTO}, {@code Pine.HookMode.INLINE},
+     *                    {@code Pine.HookMode.REPLACEMENT} or {@code Pine.HookMode.INLINE_WITHOUT_JIT}.
      * @throws IllegalArgumentException If the {@code newHookMode} is not one of
-     *                     {@code Pine.HookMode.AUTO}, {@code Pine.HookMode.INLINE} or
-     *                     {@code Pine.HookMode.REPLACEMENT}.
+     *                     {@code Pine.HookMode.AUTO}, {@code Pine.HookMode.INLINE},
+     *                     {@code Pine.HookMode.REPLACEMENT}, or {@code Pine.HookMode.INLINE_WITHOUT_JIT}.
      * @see Pine.HookMode
      */
     public static void setHookMode(int newHookMode) {
-        if (newHookMode < HookMode.AUTO || newHookMode > HookMode.REPLACEMENT)
+        if (newHookMode < HookMode.AUTO || newHookMode > HookMode.INLINE_WITHOUT_JIT)
             throw new IllegalArgumentException("Illegal hookMode " + newHookMode);
+        if (newHookMode == HookMode.AUTO) {
+            // On Android N or lower, entry_point_from_compiled_code_ may be hard-coded in the machine code
+            // (sharpening optimization), entry replacement will most likely not take effect,
+            // so we prefer to use inline hook; And on Android O+, this optimization is not performed,
+            // so we prefer a more stable entry replacement mode.
+
+            newHookMode = PineConfig.sdkLevel < Build.VERSION_CODES.O
+                    ? HookMode.INLINE_WITHOUT_JIT : HookMode.REPLACEMENT;
+        }
         hookMode = newHookMode;
+    }
+
+    /**
+     * Return the current hook mode.
+     * @return One of {@code Pine.HookMode.INLINE}, {@code Pine.HookMode.REPLACEMENT} or
+     * {@code Pine.HookMode.INLINE_WITHOUT_JIT}.
+     */
+    public static int getHookMode() {
+        return hookMode;
     }
 
     /**
@@ -187,7 +195,7 @@ public final class Pine {
      * @see HookHandler
      */
     public static void setHookHandler(HookHandler h) {
-        if (h == null) throw new NullPointerException("h == null");
+        if (h == null) throw new NullPointerException("handler == null");
         sHookHandler = h;
     }
 
@@ -304,17 +312,8 @@ public final class Pine {
 
     static void hookNewMethod(HookRecord hookRecord, int modifiers, boolean canInitDeclaringClass) {
         Member method = hookRecord.target;
-        boolean isInlineHook;
-        if (hookMode == HookMode.AUTO) {
-            // On Android N or lower, entry_point_from_compiled_code_ may be hard-coded in the machine code
-            // (sharpening optimization), entry replacement will most likely not take effect,
-            // so we prefer to use inline hook; And on Android O+, this optimization is not performed,
-            // so we prefer a more stable entry replacement mode.
-
-            isInlineHook = PineConfig.sdkLevel < Build.VERSION_CODES.O;
-        } else {
-            isInlineHook = hookMode == HookMode.INLINE;
-        }
+        final int mode = hookMode;
+        boolean isInlineHook = mode == HookMode.INLINE || mode == HookMode.INLINE_WITHOUT_JIT;
 
         long thread = currentArtThread0();
         if ((hookRecord.isStatic = Modifier.isStatic(modifiers)) && canInitDeclaringClass) {
@@ -339,10 +338,12 @@ public final class Pine {
         if (isInlineHook) {
             // Cannot compile native or proxy methods.
             if (!(jni || proxy)) {
-                boolean compiled = compile0(thread, method);
-                if (!compiled) {
-                    Log.w(TAG, "Cannot compile the target method, force replacement mode.");
-                    isInlineHook = false;
+                if (mode == HookMode.INLINE) {
+                    boolean compiled = compile0(thread, method);
+                    if (!compiled) {
+                        Log.w(TAG, "Cannot compile the target method, force replacement mode.");
+                        isInlineHook = false;
+                    }
                 }
             } else {
                 isInlineHook = false;
@@ -350,6 +351,7 @@ public final class Pine {
         }
 
         String bridgeMethodName;
+        // FIXME: WARNING: The following code will cause parameter types and return type to be initialized!!!
         if (method instanceof Method) {
             hookRecord.paramTypes = ((Method) method).getParameterTypes();
             Class<?> returnType = ((Method) method).getReturnType();
@@ -362,17 +364,81 @@ public final class Pine {
 
         hookRecord.paramNumber = hookRecord.paramTypes.length;
 
-        Method bridge = sBridgeMethods.get(bridgeMethodName);
-        if (bridge == null)
+        hookRecord.bridge = PineConfig.sdkLevel == Build.VERSION_CODES.M && arch == ARCH_ARM64
+                ? Arm64MarshmallowEntry.getBridge(bridgeMethodName, hookRecord.paramNumber)
+                : sBridgeMethods.get(bridgeMethodName);
+        if (hookRecord.bridge == null)
             throw new AssertionError("Cannot find bridge method for " + method);
 
-        Method backup = hook0(thread, declaring, method, bridge, isInlineHook, jni, proxy);
+        Method backup = hook0(thread, declaring, hookRecord, method, hookRecord.bridge, isInlineHook,
+                jni, proxy);
 
         if (backup == null)
             throw new RuntimeException("Failed to hook method " + method);
 
         backup.setAccessible(true);
         hookRecord.backup = backup;
+    }
+
+    public static Method hookReplace(HookRecord hookRecord, Method replacement, Method backup,
+                                     boolean canInitDeclaringClass) {
+        Member method = hookRecord.target;
+        long artMethod = getArtMethod(method);
+        synchronized (sHookRecords) {
+            if (sHookRecords.containsKey(artMethod))
+                throw new IllegalStateException("Attempting to re-hook " + method);
+            sHookRecords.put(artMethod, hookRecord);
+        }
+        int modifiers = method.getModifiers();
+        final int mode = hookMode;
+        boolean isInlineHook = mode != HookMode.REPLACEMENT;
+
+        long thread = currentArtThread0();
+        if ((hookRecord.isStatic = Modifier.isStatic(modifiers)) && canInitDeclaringClass) {
+            resolve((Method) method);
+            if (PineConfig.sdkLevel >= Build.VERSION_CODES.Q) {
+                // Android R has a new class state called "visibly initialized",
+                // and FixupStaticTrampolines will be called after class was initialized.
+                // The entry point will be reset. Make this class be visibly initialized before hook
+                // Note: this feature does not exist on official Android Q,
+                // but some weird ROMs cherry-pick this commit to these Android Q ROMs
+                // https://github.com/crdroidandroid/android_art/commit/ef76ced9d2856ac988377ad99288a357697c4fa2
+                makeClassesVisiblyInitialized(thread);
+            }
+        }
+
+        Class<?> declaring = method.getDeclaringClass();
+
+        final boolean jni = Modifier.isNative(modifiers);
+        final boolean proxy = Proxy.isProxyClass(declaring);
+
+        // Only try compile target method when trying inline hook.
+        if (isInlineHook) {
+            // Cannot compile native or proxy methods.
+            if (!(jni || proxy)) {
+                if (mode == HookMode.INLINE) {
+                    boolean compiled = compile0(thread, method);
+                    if (!compiled) {
+                        Log.w(TAG, "Cannot compile the target method, force replacement mode.");
+                        isInlineHook = false;
+                    }
+                }
+            } else {
+                isInlineHook = false;
+            }
+        }
+
+        hookRecord.bridge = replacement;
+        hookRecord.skipUpdateDeclaringClass = true;
+
+        backup = hookReplace0(thread, declaring, hookRecord, method, replacement, backup,
+                isInlineHook, jni, proxy);
+
+        if (backup == null)
+            throw new RuntimeException("Failed to hook method " + method);
+
+        backup.setAccessible(true);
+        return hookRecord.backup = backup;
     }
 
     private static void resolve(Method method) {
@@ -423,27 +489,28 @@ public final class Pine {
         return getAddress0(thread, o);
     }
 
-    static Object callBackupMethod(Member origin, Method backup, Object thisObject, Object[] args) throws InvocationTargetException, IllegalAccessException {
-        if (PineConfig.sdkLevel >= Build.VERSION_CODES.N) {
-            // On Android 7.0+, java.lang.Class object is movable and may cause crash when
-            // invoke backup method, so we update declaring_class when invoke backup method.
-            Class<?> declaring = origin.getDeclaringClass();
-            updateDeclaringClass(origin, backup);
-            //Runtime.getRuntime().gc();
-            Object result = backup.invoke(thisObject, args);
-
-            // Explicit use declaring_class object to ensure it has reference on stack
-            // and avoid being moved by gc.
-            declaring.getClass();
-            return result;
-        } else {
-            return backup.invoke(thisObject, args);
-        }
+    static Object callBackupMethod(HookRecord hookRecord, Object thisObject, Object[] args) throws InvocationTargetException, IllegalAccessException {
+        // java.lang.Class object is movable and may cause crash when invoke backup method,
+        // native entry of JNI method may be changed by RegisterNatives and UnregisterNatives,
+        // so we need to update them when invoke backup method.
+        Member origin = hookRecord.target;
+        Method backup = hookRecord.backup;
+        Class<?> declaring = origin.getDeclaringClass();
+        syncMethodInfo(origin, backup, hookRecord.skipUpdateDeclaringClass);
+        // FIXME: GC happens here (you can add Runtime.getRuntime().gc() to test) will crash backup calling
+        Object result = backup.invoke(thisObject, args);
+        // Explicit use declaring_class object to ensure it has reference on stack
+        // and avoid being moved by gc. (invalid for now)
+        declaring.getClass();
+        return result;
     }
 
     /**
      * Invoke the original implementation of the given method.
-     * If the method is not hooked, just invoke it directly.
+     * If the method is not hooked, the behavior is undefined. Now Pine will try to directly invoke it,
+     *   but if other threads hooked the given method between we check if the method is hooked
+     *   and invoke it directly, this call will be intercepted and the registered hooks will be
+     *   triggered. DO NOT RELY ON THIS UNRELIABLE INTERNAL BEHAVIOR.
      * @param method The method you want to invoke its original implementation.
      * @param thisObject  The object the underlying method is invoked from
      * @param args The arguments used for the method call
@@ -468,14 +535,17 @@ public final class Pine {
 
         HookRecord hookRecord = sHookRecords.get(getArtMethod(method));
         if (hookRecord == null) {
-            // Not hooked
+            // Not hooked, try to invoke it directly (but it may have side effect)
+            if (PineConfig.debug)
+                Log.w(TAG, "Attempting to invoke original implementation on a not-hooked method " + method
+                    + ". This is undefined behavior and may have side effect (e.g. if other threads hooked "
+                    + "the method before we actually call Method.invoke(), the registered hooks will be triggered).", new Throwable("here"));
             if (method instanceof Constructor) {
                 if (thisObject != null)
                     throw new IllegalArgumentException(
                             "Cannot invoke a not hooked Constructor with a non-null receiver");
                 try {
-                    ((Constructor<?>) method).newInstance(args);
-                    return null;
+                    return ((Constructor<?>) method).newInstance(args);
                 } catch (InstantiationException e) {
                     throw new IllegalArgumentException("invalid Constructor", e);
                 }
@@ -490,12 +560,12 @@ public final class Pine {
             // I think we don't need makeClassesVisiblyInitialized here
             assert method instanceof Method;
             resolve((Method) method);
-//            if (PineConfig.sdkLevel >= 30) {
-//                makeClassesVisiblyInitialized(thread);
+//            if (PineConfig.sdkLevel >= Build.VERSION_CODES.R) {
+//                makeClassesVisiblyInitialized(currentArtThread0());
 //            }
         }
 
-        return callBackupMethod(hookRecord.target, hookRecord.backup, thisObject, args);
+        return callBackupMethod(hookRecord, thisObject, args);
     }
 
     /**
@@ -555,14 +625,16 @@ public final class Pine {
     /**
      * Prevent any JIT inlining in the current process. DOES NOT WORK FOR NOW.
      * @return {@code true} if successfully disabled jit inlining, {@code false} otherwise.
+     * @deprecated Never worked on any Android versions. Its functionality has been removed.
      */
-    public static boolean disableJitInline() {
-        if (PineConfig.sdkLevel < Build.VERSION_CODES.N) {
-            // No JIT.
-            return false;
-        }
+    @Deprecated public static boolean disableJitInline() {
+//        if (PineConfig.sdkLevel < Build.VERSION_CODES.N) {
+//            // No JIT.
+//            return false;
+//        }
         ensureInitialized();
-        return disableJitInline0();
+//        return disableJitInline0();
+        return false;
     }
 
     /**
@@ -570,12 +642,21 @@ public final class Pine {
      * @param allowed {@code true} if allowed, {@code false} otherwise.
      */
     public static void setJitCompilationAllowed(boolean allowed) {
+        setJitCompilationAllowed(allowed, false);
+    }
+
+    /**
+     * Set whether we can manually JIT compile a method.
+     * @param allowed {@code true} if allowed, {@code false} otherwise.
+     * @param autoCompileBridge {@code true} if try to automatically compile bridge methods for better performance
+     */
+    public static void setJitCompilationAllowed(boolean allowed, boolean autoCompileBridge) {
         if (PineConfig.sdkLevel < Build.VERSION_CODES.N) {
             // No JIT.
             return;
         }
         ensureInitialized();
-        setJitCompilationAllowed0(allowed);
+        setJitCompilationAllowed0(allowed, autoCompileBridge);
     }
 
     /**
@@ -638,7 +719,7 @@ public final class Pine {
 
         if (PineConfig.disableHooks || hookRecord.emptyCallbacks()) {
             try {
-                return callBackupMethod(hookRecord.target, hookRecord.backup, thisObject, args);
+                return callBackupMethod(hookRecord, thisObject, args);
             } catch (InvocationTargetException e) {
                 throw e.getTargetException();
             }
@@ -729,10 +810,15 @@ public final class Pine {
 
     private static native void enableFastNative();
 
-    private static native long getArtMethod(Member method);
+    public static native long getArtMethod(Member method);
 
-    private static native Method hook0(long thread, Class<?> declaring, Member target, Method bridge,
-                                       boolean isInlineHook, boolean jni, boolean proxy);
+    private static native Method hook0(long thread, Class<?> declaring, HookRecord hookRecord,
+                                       Member target, Method bridge, boolean isInlineHook,
+                                       boolean jni, boolean proxy);
+
+    private static native Method hookReplace0(long thread, Class<?> declaring, HookRecord hookRecord,
+                                              Member target, Method replacement, Method backup,
+                                              boolean isInlineHook, boolean jni, boolean proxy);
 
     private static native boolean compile0(long thread, Member method);
 
@@ -740,7 +826,7 @@ public final class Pine {
 
     private static native boolean disableJitInline0();
 
-    private static native void setJitCompilationAllowed0(boolean allowed);
+    private static native void setJitCompilationAllowed0(boolean allowed, boolean autoCompileBridge);
 
     private static native boolean disableProfileSaver0();
 
@@ -754,7 +840,7 @@ public final class Pine {
 
     public static native void getArgsX86(int extras, int[] out, int ebx);
 
-    private static native void updateDeclaringClass(Member origin, Method backup);
+    private static native void syncMethodInfo(Member origin, Method backup, boolean skipDeclaringClass);
 
     public static native long currentArtThread0();
 
@@ -806,15 +892,25 @@ public final class Pine {
         int AUTO = 0;
 
         /**
-         * INLINE: Use inline hook (overwrite the first few instructions to hook) first.
+         * INLINE: Prefer inline hook (overwrite the first few instructions to hook),
+         * try to manually compile the method if not compiled.
          * If the method cannot be hooked in this mode, fallback to {@code REPLACEMENT}.
+         * @deprecated Since manually do a JIT compilation causes crashes on some devices,
+         * we prefer {@code INLINE_WITHOUT_JIT} instead.
          */
+        @Deprecated
         int INLINE = 1;
 
         /**
          * REPLACEMENT: Always change entry point of the method to hook it.
          */
         int REPLACEMENT = 2;
+
+        /**
+         * Similar to {@code INLINE}, but when the target method isn't compiled yet,
+         * automatically fallback to {@code REPLACEMENT} mode instead of manually compile it
+         */
+        int INLINE_WITHOUT_JIT = 3;
     }
 
     /**
@@ -833,11 +929,15 @@ public final class Pine {
     public static final class HookRecord {
         public final Member target;
         public final long artMethod;
+        public Method bridge;
         public Method backup;
+        public long trampoline;
         public boolean isStatic;
         public int paramNumber;
         public Class<?>[] paramTypes;
         private Set<MethodHook> callbacks = new HashSet<>();
+        public volatile Object paramTypesCache;
+        public boolean skipUpdateDeclaringClass;
 
         public HookRecord(Member target, long artMethod) {
             this.target = target;
@@ -862,6 +962,10 @@ public final class Pine {
 
         public boolean isPending() {
             return backup == null;
+        }
+
+        public Object callBackup(Object thisObject, Object... args) throws InvocationTargetException, IllegalAccessException {
+            return callBackupMethod(this, thisObject, args);
         }
     }
 
@@ -985,7 +1089,7 @@ public final class Pine {
          * @see Pine#invokeOriginalMethod(Member, Object, Object...)
          */
         public Object invokeOriginalMethod() throws InvocationTargetException, IllegalAccessException {
-            return callBackupMethod(hookRecord.target, hookRecord.backup, thisObject, args);
+            return callBackupMethod(hookRecord, thisObject, args);
         }
 
         /**
@@ -999,7 +1103,7 @@ public final class Pine {
          * @see #invokeOriginalMethod(Member, Object, Object...)
          */
         public Object invokeOriginalMethod(Object thisObject, Object... args) throws InvocationTargetException, IllegalAccessException {
-            return callBackupMethod(hookRecord.target, hookRecord.backup, thisObject, args);
+            return callBackupMethod(hookRecord, thisObject, args);
         }
     }
 }

@@ -3,6 +3,7 @@ package de.robv.android.xposed;
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Environment;
 import android.os.StrictMode;
 import android.preference.PreferenceManager;
 import android.util.Log;
@@ -16,7 +17,6 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -25,18 +25,42 @@ import java.util.Set;
  * This class is basically the same as SharedPreferencesImpl from AOSP, but
  * read-only and without listeners support. Instead, it is made to be
  * compatible with all ROMs.
- * @deprecated This class may cannot works in Android 9+,
+ * @deprecated This class cannot work in Android 9+,
  * please use other api (e.g. ContentProvider) to share module configurations.
  */
 @Deprecated
 public final class XSharedPreferences implements SharedPreferences {
 	private static final String TAG = "XSharedPreferences";
+	private static Loader sLoader = Loader.SYNC;
 	private final File mFile;
 //	private final String mFilename;
 	private Map<String, Object> mMap;
 	private boolean mLoaded = false;
 	private long mLastModified;
 	private long mFileSize;
+
+	public interface Loader {
+		Loader SYNC = (pref, action) -> {
+			StrictMode.ThreadPolicy policy = StrictMode.allowThreadDiskReads();
+			try {
+				action.run();
+			} finally {
+				StrictMode.setThreadPolicy(policy);
+			}
+		};
+		Loader ASYNC = (pref, action) -> new Thread("XSharedPreferences-load") {
+            @Override public void run() {
+                synchronized (pref) {
+                    action.run();
+                }
+            }
+        }.start();
+		void run(XSharedPreferences pref, Runnable action);
+	}
+
+	public static void setLoader(Loader loader) {
+		sLoader = loader;
+	}
 
 	/**
 	 * Read settings from the specified file.
@@ -64,7 +88,7 @@ public final class XSharedPreferences implements SharedPreferences {
 	 * @param prefFileName The file name without ".xml".
 	 */
 	public XSharedPreferences(String packageName, String prefFileName) {
-		mFile = getXSharedPreferences(packageName, prefFileName);
+		mFile = new File(Environment.getDataDirectory(), "data/" + packageName + "/shared_prefs/" + prefFileName + ".xml");
 //		mFilename = mFile.getAbsolutePath();
 		startLoadFromDisk();
 	}
@@ -105,14 +129,7 @@ public final class XSharedPreferences implements SharedPreferences {
 		synchronized (this) {
 			mLoaded = false;
 		}
-		new Thread("XSharedPreferences-load") {
-			@Override
-			public void run() {
-				synchronized (XSharedPreferences.this) {
-					loadFromDiskLocked();
-				}
-			}
-		}.start();
+		sLoader.run(this, this::loadFromDiskLocked);
 	}
 
 	@SuppressWarnings({ "rawtypes", "unchecked" })
@@ -164,7 +181,9 @@ public final class XSharedPreferences implements SharedPreferences {
 		} else {
 			mMap = new HashMap<>();
 		}
-		notifyAll();
+		if (Thread.holdsLock(this)) {
+			notifyAll();
+		}
 	}
 
 	/**
@@ -309,17 +328,5 @@ public final class XSharedPreferences implements SharedPreferences {
 	@Override
 	public void unregisterOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener listener) {
 		throw new UnsupportedOperationException("listeners are not supported in this implementation");
-	}
-
-
-	public static File getXSharedPreferences(String packageName, String prefFileName) {
-		try {
-			Class<?> bEnvironment = XSharedPreferences.class.getClassLoader().loadClass("top.niunaijun.blackbox.core.env.BEnvironment");
-			Method getXSharedPreferences = bEnvironment.getDeclaredMethod("getXSharedPreferences", String.class, String.class);
-			getXSharedPreferences.setAccessible(true);
-			return (File) getXSharedPreferences.invoke(null, packageName, prefFileName);
-		} catch (Throwable e) {
-			return null;
-		}
 	}
 }

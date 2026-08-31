@@ -5,11 +5,13 @@
 #ifndef PINE_ANDROID_H
 #define PINE_ANDROID_H
 
+#include <vector>
 #include <jni.h>
+#include <android/api-level.h>
 #include "art/gc_defs.h"
 #include "utils/log.h"
 #include "utils/macros.h"
-#include "utils/elf_img.h"
+#include "utils/elf_image.h"
 
 namespace pine {
     class ScopedGCCriticalSection {
@@ -17,8 +19,8 @@ namespace pine {
         ALWAYS_INLINE ScopedGCCriticalSection(void* self, art::GcCause cause, art::CollectorType collector);
         ALWAYS_INLINE ~ScopedGCCriticalSection();
     private:
-        art::GCCriticalSection critical_section_;
-        const char* old_no_suspend_reason_;
+        [[maybe_unused]] art::GCCriticalSection critical_section_;
+        [[maybe_unused]] const char* old_no_suspend_reason_;
     };
 
     class Android final {
@@ -29,12 +31,11 @@ namespace pine {
 
         static void Init(JNIEnv* env, int sdk_version, bool disable_hiddenapi_policy, bool disable_hiddenapi_policy_for_platform);
         static void DisableHiddenApiPolicy(bool application, bool platform) {
-            ElfImg handle("libart.so");
+            ElfImage handle("libart.so");
             DisableHiddenApiPolicy(&handle, application, platform);
         }
         static bool DisableProfileSaver();
         static void SetClassLinker(void* class_linker) {
-            LOGI("Got class linker %p", class_linker);
             class_linker_ = class_linker;
         }
         static void* GetClassLinker() {
@@ -59,7 +60,7 @@ namespace pine {
         }
 
         static int version;
-        static JavaVM* jvm;
+        static JavaVM* jvm_;
 
         static void StartGCCriticalSection(void* cookie, void* self, art::GcCause cause, art::CollectorType collector) {
             if (start_gc_critical_section) {
@@ -105,26 +106,32 @@ namespace pine {
         static constexpr int kS = 31;
         static constexpr int kSL = 32;
         static constexpr int kT = 33;
+        static constexpr int kU = 34;
+        static constexpr int kV = 35;
     private:
-        static void DisableHiddenApiPolicy(const ElfImg* handle, bool application, bool platform);
-        static void InitMembersFromRuntime(JavaVM* jvm, const ElfImg* handle);
-        static void InitClassLinker(void* runtime, size_t java_vm_offset, const ElfImg* handle, bool has_small_irt);
-        static void InitJitCodeCache(void* runtime, size_t java_vm_offset, const ElfImg* handle);
+        static void DisableHiddenApiPolicy(const ElfImage* handle, bool application, bool platform);
+        static void InitMembersFromRuntime(JavaVM* jvm, const ElfImage* handle);
+        static void InitClassLinker(void* runtime, size_t java_vm_offset, const ElfImage* handle, bool has_small_irt);
+        static void InitJitCodeCache(void* runtime, size_t java_vm_offset, const ElfImage* handle);
 
-        static size_t OffsetOfJavaVm(bool has_small_irt) {
-            if (has_small_irt) {
-                return Is64Bit() ? 528 : 0 /* TODO: Calculate offset on 32-bit. Currently force fallback to search memory. */;
+        static std::vector<size_t> OffsetOfJavaVm(bool has_small_irt) {
+            std::vector<size_t> offsets;
+            // This function will only be called on Android 10+ where ART is always an apex module.
+            // Since APEX module can be upgraded through Google Play update without the need to
+            // update Android major version, hardcode offset will be meaningless on old Android
+            // major versions with new ART. We list all offsets we known.
+            if (LIKELY(has_small_irt)) {
+                offsets.emplace_back(Is64Bit() ? 632 : 356); // ART 14, 15
+                if (version < kU)
+                    offsets.emplace_back(Is64Bit() ? 624 : 352); // ART 13
+                if (UNLIKELY(version < kT))
+                    offsets.emplace_back(Is64Bit() ? 528 : 304); // ART 12
+            } else {
+                offsets.emplace_back(Is64Bit() ? 520 : 300); // ART 12
+                if (UNLIKELY(version < kS))
+                    offsets.emplace_back(Is64Bit() ? 496 : 288); // ART 10-11
             }
-            switch (version) {
-                case kT:
-                case kSL:
-                case kS:
-                case kR:
-                case kQ:
-                    return Is64Bit() ? 496 : 288;
-                default:
-                    FATAL("Unexpected android version %d", version);
-            }
+            return offsets;
         }
 
         static void (*suspend_vm)();

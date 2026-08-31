@@ -22,10 +22,10 @@ void* (*Thread::decode_jobject)(Thread*, jobject) = nullptr;
 
 void* (*Thread::alloc_non_movable)(void*, Thread*) = nullptr;
 
-void Thread::Init(const ElfImg* handle) {
+void Thread::Init(const ElfImage* handle) {
     if (Android::version == Android::kL || Android::version == Android::kLMr1) {
-        // This function is needs to create the backup method on Lollipop.
-        // Below M, ArtMethod actually is a instance of java.lang.reflect.ArtMethod, can't use malloc()
+        // This function is needed to create the backup method on Lollipop.
+        // Below M, an ArtMethod is actually a instance of java.lang.reflect.ArtMethod, can't use malloc()
         // It should be immovable. On Kitkat, moving gc is unimplemented in art, so it can't be moved
         // but on Lollipop, this object may be moved by gc, so we need to ensure it is non-movable.
         alloc_non_movable = reinterpret_cast<void* (*)(void*, Thread*)>(handle->GetSymbolAddress(
@@ -66,5 +66,5 @@ void Thread::Init(const ElfImg* handle) {
     }
 
     decode_jobject = reinterpret_cast<void* (*)(Thread*, jobject)>(handle->GetSymbolAddress(
-            "_ZNK3art6Thread13DecodeJObjectEP8_jobject")); // art::Thread::DecodeJObject(_jobject *)
+            "_ZNK3art6Thread13DecodeJObjectEP8_jobject", false)); // art::Thread::DecodeJObject(_jobject *)
 }

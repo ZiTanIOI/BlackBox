@@ -5,7 +5,7 @@
 #include <jni.h>
 #include "art_method.h"
 #include "../jni_bridge.h"
-#include "../utils/elf_img.h"
+#include "../utils/elf_image.h"
 #include "../utils/well_known_classes.h"
 #include "../utils/scoped_local_ref.h"
 #include "../utils/memory.h"
@@ -20,6 +20,7 @@ void* ArtMethod::art_quick_to_interpreter_bridge = nullptr;
 void* ArtMethod::art_quick_generic_jni_trampoline = nullptr;
 void* ArtMethod::art_interpreter_to_compiled_code_bridge = nullptr;
 void* ArtMethod::art_interpreter_to_interpreter_bridge = nullptr;
+void* ArtMethod::ExecuteNterpImpl = nullptr;
 
 void (*ArtMethod::copy_from)(ArtMethod*, ArtMethod*, size_t) = nullptr;
 void (*ArtMethod::throw_invocation_time_error)(ArtMethod*) = nullptr;
@@ -28,11 +29,18 @@ Member<ArtMethod, uint32_t> ArtMethod::access_flags_;
 Member<ArtMethod, void*> ArtMethod::entry_point_from_jni_;
 Member<ArtMethod, void*> ArtMethod::entry_point_from_compiled_code_;
 Member<ArtMethod, void*>* ArtMethod::entry_point_from_interpreter_;
-Member<ArtMethod, uint32_t>* ArtMethod::declaring_class = nullptr;
+Member<ArtMethod, uint32_t> ArtMethod::declaring_class;
 
-void ArtMethod::Init(const ElfImg* handle) {
+void ArtMethod::Init(const ElfImage* handle) {
     art_quick_to_interpreter_bridge = handle->GetSymbolAddress("art_quick_to_interpreter_bridge");
     art_quick_generic_jni_trampoline = handle->GetSymbolAddress("art_quick_generic_jni_trampoline");
+    ExecuteNterpImpl = handle->GetSymbolAddress("ExecuteNterpImpl", false);
+
+    // Alibaba YunOS AOC runtime?
+    if (UNLIKELY(!art_quick_to_interpreter_bridge))
+        art_quick_to_interpreter_bridge = handle->GetSymbolAddress("aoc_quick_to_interpreter_bridge");
+    if (UNLIKELY(!art_quick_generic_jni_trampoline))
+        art_quick_generic_jni_trampoline = handle->GetSymbolAddress("aoc_quick_generic_jni_trampoline");
 
     if (Android::version < Android::kN) {
         art_interpreter_to_compiled_code_bridge = handle->GetSymbolAddress(
@@ -111,7 +119,11 @@ void ArtMethod::InitMembers(JNIEnv* env, ArtMethod* m1, ArtMethod* m2, ArtMethod
 
     size = Difference(reinterpret_cast<intptr_t>(m1), reinterpret_cast<intptr_t>(m2));
     int android_version = Android::version;
+
+    declaring_class.SetOffset(android_version >= Android::kM ? 0 : 8);
+#if __ANDROID_API__ < __ANDROID_API_L__
     if (LIKELY(android_version >= Android::kL)) {
+#endif
         for (uint32_t offset = 0; offset < size; offset += 2) {
             void* ptr = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(m1) + offset);
             if ((*static_cast<uint32_t*>(ptr)) == access_flags) {
@@ -174,7 +186,6 @@ void ArtMethod::InitMembers(JNIEnv* env, ArtMethod* m1, ArtMethod* m2, ArtMethod
             }
 
             entry_point_from_compiled_code_.SetOffset(compiled_code_entry_offset);
-
         } else {
             LOGE("Member entry_point_from_jni_ not found in ArtMethod, use default.");
             entry_point_from_jni_.SetOffset(GetDefaultEntryPointFromJniOffset());
@@ -183,14 +194,12 @@ void ArtMethod::InitMembers(JNIEnv* env, ArtMethod* m1, ArtMethod* m2, ArtMethod
         }
 
         if (Android::version < Android::kN) {
-            // Not align: PtrSizedFields is PACKED(4) in the android version.
+            // Not aligned: PtrSizedFields is PACKED(4) in the android version.
             entry_point_from_interpreter_ = new Member<ArtMethod, void*>(
                     entry_point_from_jni_.GetOffset() - entry_point_member_size);
-        } else {
-            // On Android 7.0+, the declaring_class may be moved by the GC,
-            // so we check and update it when invoke backup method.
-            declaring_class = new Member<ArtMethod, uint32_t>(0);
         }
+
+#if __ANDROID_API__ < __ANDROID_API_L__
     } else {
         // Hardcode members offset for Kitkat :(
         LOGW("Android Kitkat, hardcode offset only...");
@@ -200,6 +209,7 @@ void ArtMethod::InitMembers(JNIEnv* env, ArtMethod* m1, ArtMethod* m2, ArtMethod
         // FIXME This offset has not been verified, so it may be wrong
         entry_point_from_interpreter_ = new Member<ArtMethod, void*>(36);
     }
+#endif
 
     if (UNLIKELY(throw_invocation_time_error)) {
         // See https://github.com/canyie/pine/issues/8
@@ -250,13 +260,17 @@ void ArtMethod::BackupFrom(ArtMethod* source, void* entry, bool is_inline_hook, 
     }
 
     if (UNLIKELY(clear_jit_info_ref)) {
-        // entry_point_from_compiled_code_ (may references jit compiled code)
+        // entry_point_from_compiled_code_ (may refer to jit compiled code)
         SetEntryPointFromCompiledCode(art_quick_to_interpreter_bridge);
 
-        // For non-native and non-proxy methods, the entry_point_from_jni_ member is used to save
-        // ProfilingInfo, and the ProfilingInfo may saved original compiled code entry, the interpreter
+        // Before Android S, for non-native and non-proxy methods, the entry_point_from_jni_ member
+        // is used to save ProfilingInfo, which may saved original compiled code entry, the interpreter
         // will jump directly to the saved_code_entry_ for execution. Clear entry_point_from_jni_ to avoid it.
-        entry_point_from_jni_.Set(this, nullptr);
+        // Don't do this on Android S(12)+ since the `data_` member is now used for save CodeItem* in Android 12
+        // https://cs.android.com/android/_/android/platform/art/+/095dc4611b8001861f8d0e621f9df704a933754a
+        // https://cs.android.com/android/_/android/platform/art/+/4717175e40a19e79af904dfb7b7dd13f046debd7
+
+        if (Android::version < Android::kS) entry_point_from_jni_.Set(this, nullptr);
     } else {
         SetEntryPointFromCompiledCode(entry);
 
@@ -287,14 +301,18 @@ void ArtMethod::AfterHook(bool is_inline_hook, bool is_native_or_proxy) {
     if (Android::version >= Android::kQ) {
         // On Android 10+, a method can be execute with fast interpreter is cached in access flags,
         // and we may need to disable fast interpreter for a hooked method.
-        // Clear the cached flag(kAccFastInterpreterToInterpreterInvoke) to refresh the state.
+        // Clear the cached flag (kAccFastInterpreterToInterpreterInvoke) to refresh the state.
         access_flags &= ~AccessFlags::kFastInterpreterToInterpreterInvoke;
     }
 
     bool is_native = (access_flags & AccessFlags::kNative) != 0;
-    if (UNLIKELY(is_native && Android::version >= Android::kL)) {
-        // GC is disabled when executing FastNative and CriticalNative methods
-        // and may cause deadlocks. This is not applicable for hooked methods.
+    if (UNLIKELY(is_native
+#if __ANDROID_API__ < __ANDROID_API_L__
+        && Android::version >= Android::kL
+#endif
+        )) {
+        // GC is disabled when executing FastNative and CriticalNative methods,
+        // which may cause deadlocks. This is not applicable for hooked methods.
         access_flags &= ~AccessFlags::kFastNative;
         if (Android::version >= Android::kP) {
             access_flags &= ~AccessFlags::kCriticalNative;
@@ -324,4 +342,3 @@ bool ArtMethod::TestDontCompile(JNIEnv* env) {
     env->DeleteLocalRef(exception);
     return special;
 }
-

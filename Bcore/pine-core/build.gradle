@@ -15,9 +15,9 @@ android {
 
         externalNativeBuild {
             cmake {
-                cFlags '-Wall -Wextra -Werror -fvisibility=hidden -fvisibility-inlines-hidden'
+                cFlags '-Wall -Wextra -fvisibility=hidden -fvisibility-inlines-hidden'
                 cppFlags '-std=c++17 -fno-exceptions -fno-rtti'
-                // arguments '-DANDROID_STL=none' // built-in libcxx has exception
+                arguments '-DANDROID_STL=c++_static'
                 abiFilters 'armeabi-v7a', 'arm64-v8a'
                 targets 'pine'
             }

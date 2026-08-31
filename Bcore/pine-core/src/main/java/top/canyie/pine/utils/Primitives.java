@@ -13,20 +13,23 @@ import top.canyie.pine.Pine;
  * @author canyie
  */
 @SuppressWarnings("JavaReflectionMemberAccess") @SuppressLint("PrivateApi") public final class Primitives {
-    private static final String TAG = "Primitives";
+    private static final String TAG = "Pine.Primitives";
     private static Class<?> unsafeClass;
     private static Object unsafe;
     private static Method putObject;
+    private static Method getInt;
     private static boolean triedGetShadowKlassField;
     private static Field shadowKlassField;
     private static Field superClassField;
     private static Field classAccessFlagsField;
+    private static int baseOffsetOfObjectArray;
 
     public static long currentArtThread() {
         Pine.ensureInitialized();
         return Pine.currentArtThread0();
     }
 
+    @SuppressLint("SoonBlockedPrivateApi")
     public static void setObjectClass(Object target, Class<?> newClass) {
         if (target.getClass() == newClass) return;
         if (!triedGetShadowKlassField) {
@@ -35,7 +38,7 @@ import top.canyie.pine.Pine;
                 shadowKlassField = Object.class.getDeclaredField("shadow$_klass_");
                 shadowKlassField.setAccessible(true);
             } catch (NoSuchFieldException e) {
-                Log.w("Primitives", "Object.shadow$_klass_ not found, use Unsafe.", e);
+                Log.w(TAG, "Object.shadow$_klass_ not found, use Unsafe.", e);
             }
         }
         try {
@@ -58,7 +61,7 @@ import top.canyie.pine.Pine;
         if (target.getSuperclass() == newSuperClass) return;
         if (superClassField == null) {
             try {
-                // noinspection JavaReflectionMemberAccess
+                // noinspection SoonBlockedPrivateApi
                 superClassField = Class.class.getDeclaredField("superClass");
                 superClassField.setAccessible(true);
             } catch (NoSuchFieldException e) {
@@ -75,6 +78,7 @@ import top.canyie.pine.Pine;
     public static int getFieldOffset(Field field) throws Exception {
         // 1. try Android-specific field
         try {
+            // noinspection SoonBlockedPrivateApi
             Field offset = Field.class.getDeclaredField("offset");
             offset.setAccessible(true);
             return offset.getInt(field);
@@ -83,7 +87,8 @@ import top.canyie.pine.Pine;
 
         // 2. try Android-specific method
         try {
-            @SuppressLint("DiscouragedPrivateApi") Method getOffset = Field.class.getDeclaredMethod("getOffset");
+            // noinspection DiscouragedPrivateApi
+            Method getOffset = Field.class.getDeclaredMethod("getOffset");
             getOffset.setAccessible(true);
             return (int) getOffset.invoke(field);
         } catch (Exception ignored) {
@@ -113,6 +118,32 @@ import top.canyie.pine.Pine;
         } catch (IllegalAccessException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    public static long getAddress(Object o) {
+        if (o == null) return 0;
+        long address = Pine.getAddress(currentArtThread(), o);
+        if (address == 0) {
+            // Thread::DecodeJObject is inlined
+            ensureUnsafeReady();
+            Object[] array = new Object[] { o };
+            try {
+                if (baseOffsetOfObjectArray == 0) {
+                    Method arrayBaseOffset = unsafeClass.getDeclaredMethod("arrayBaseOffset", Class.class);
+                    arrayBaseOffset.setAccessible(true);
+                    baseOffsetOfObjectArray = (int) arrayBaseOffset.invoke(unsafe, Object[].class);
+
+                    getInt = unsafeClass.getDeclaredMethod("getInt", Object.class, long.class);
+                    getInt.setAccessible(true);
+                }
+                // ART allocates objects in the low 4GB memory region
+                // so int32_t is enough for object references (actually stores addresses)
+                address = (int) getInt.invoke(unsafe, array, baseOffsetOfObjectArray);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }
+        return address;
     }
 
     public static byte[] int2Bytes(int value) {

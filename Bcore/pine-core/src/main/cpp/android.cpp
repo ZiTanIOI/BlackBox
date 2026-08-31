@@ -16,7 +16,7 @@
 using namespace pine;
 
 int Android::version = -1;
-JavaVM* Android::jvm = nullptr;
+JavaVM* Android::jvm_ = nullptr;
 
 void (*Android::suspend_vm)() = nullptr;
 void (*Android::resume_vm)() = nullptr;
@@ -34,14 +34,33 @@ void (*Android::move_obsolete_method_)(void*, void*, void*) = nullptr;
 
 void Android::Init(JNIEnv* env, int sdk_version, bool disable_hiddenapi_policy, bool disable_hiddenapi_policy_for_platform) {
     Android::version = sdk_version;
-    if (UNLIKELY(env->GetJavaVM(&jvm) != JNI_OK)) {
+    if (UNLIKELY(env->GetJavaVM(&jvm_) != JNI_OK)) {
         LOGF("Cannot get java vm");
         env->FatalError("Cannot get java vm");
         abort();
     }
 
     {
-        ElfImg art_lib_handle("libart.so");
+        bool eng_build = false;
+        ElfImage art_lib_handle("libart.so");
+        if (UNLIKELY(!art_lib_handle.IsOpened())) {
+            // Running on eng build ROMs?
+            art_lib_handle.RelativeOpen("libartd.so", true, true);
+            if (LIKELY(art_lib_handle.IsOpened())) {
+                eng_build = true;
+            } else {
+                // Alibaba YunOS AOC runtime?
+                constexpr const char* kLibAocPath = "/system/lib"
+#ifdef __LP64__
+                                                    "64"
+#endif
+                                                    "/libaoc.so";
+                if (access(kLibAocPath, R_OK) == 0) {
+                    art_lib_handle.Open(kLibAocPath, true, true);
+                }
+            }
+        }
+
         if (Android::version >= Android::kR) {
             suspend_all = reinterpret_cast<void (*)(void*, const char*, bool)>(art_lib_handle.GetSymbolAddress(
                     "_ZN3art16ScopedSuspendAllC1EPKcb"));
@@ -80,12 +99,13 @@ void Android::Init(JNIEnv* env, int sdk_version, bool disable_hiddenapi_policy, 
 
         art::Thread::Init(&art_lib_handle);
         art::ArtMethod::Init(&art_lib_handle);
-        if (sdk_version >= kN) {
-            ElfImg jit_lib_handle("libart-compiler.so", false);
+        // JIT API is not supported yet in Android R+
+        if (UNLIKELY(sdk_version >= kN && sdk_version < kR)) {
+            ElfImage jit_lib_handle(eng_build ? "libartd-compiler.so" : "libart-compiler.so", true, false);
             art::Jit::Init(&art_lib_handle, &jit_lib_handle);
         }
 
-        InitMembersFromRuntime(jvm, &art_lib_handle);
+        InitMembersFromRuntime(jvm_, &art_lib_handle);
     }
 
     WellKnownClasses::Init(env);
@@ -98,35 +118,45 @@ static int FakeHandleHiddenApi() {
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "cppcoreguidelines-macro-usage"
 
-void Android::DisableHiddenApiPolicy(const ElfImg* handle, bool application, bool platform) {
-    TrampolineInstaller* trampoline_installer = TrampolineInstaller::GetDefault();
+void Android::DisableHiddenApiPolicy(const ElfImage* handle, bool application, bool platform) {
+    auto trampoline_installer = TrampolineInstaller::GetDefault();
     void* replace = reinterpret_cast<void*>(FakeHandleHiddenApi);
+    bool failed = false;
 
-#define HOOK_SYMBOL(symbol) do { \
-void *target = handle->GetSymbolAddress(symbol); \
+#define HOOK_SYMBOL(symbol, warn_if_missing) do { \
+void *target = handle->GetSymbolAddress(symbol, warn_if_missing); \
 if (LIKELY(target))  \
     trampoline_installer->NativeHookNoBackup(target, replace); \
 else  \
-    LOGE("DisableHiddenApiPolicy: symbol %s not found", symbol); \
+    failed = true; \
 } while(false)
 
     if (Android::version >= Android::kQ) {
-        if (application) {
+        if (LIKELY(application)) {
             // Android Q, for Domain::kApplication
-            HOOK_SYMBOL("_ZN3art9hiddenapi6detail28ShouldDenyAccessToMemberImplINS_8ArtFieldEEEbPT_NS0_7ApiListENS0_12AccessMethodE");
-            HOOK_SYMBOL("_ZN3art9hiddenapi6detail28ShouldDenyAccessToMemberImplINS_9ArtMethodEEEbPT_NS0_7ApiListENS0_12AccessMethodE");
+            HOOK_SYMBOL("_ZN3art9hiddenapi6detail28ShouldDenyAccessToMemberImplINS_8ArtFieldEEEbPT_NS0_7ApiListENS0_12AccessMethodE", false);
+            HOOK_SYMBOL("_ZN3art9hiddenapi6detail28ShouldDenyAccessToMemberImplINS_9ArtMethodEEEbPT_NS0_7ApiListENS0_12AccessMethodE", false);
         }
 
-        if (platform) {
+        if (LIKELY(platform)) {
             // For Domain::kPlatform
-            HOOK_SYMBOL("_ZN3art9hiddenapi6detail30HandleCorePlatformApiViolationINS_8ArtFieldEEEbPT_RKNS0_13AccessContextENS0_12AccessMethodENS0_17EnforcementPolicyE");
-            HOOK_SYMBOL("_ZN3art9hiddenapi6detail30HandleCorePlatformApiViolationINS_9ArtMethodEEEbPT_RKNS0_13AccessContextENS0_12AccessMethodENS0_17EnforcementPolicyE");
+            HOOK_SYMBOL("_ZN3art9hiddenapi6detail30HandleCorePlatformApiViolationINS_8ArtFieldEEEbPT_RKNS0_13AccessContextENS0_12AccessMethodENS0_17EnforcementPolicyE", false);
+            HOOK_SYMBOL("_ZN3art9hiddenapi6detail30HandleCorePlatformApiViolationINS_9ArtMethodEEEbPT_RKNS0_13AccessContextENS0_12AccessMethodENS0_17EnforcementPolicyE", false);
+        }
+
+        if (UNLIKELY(failed)) {
+            // These functions are inlined for arm32 on Android 15, but not for arm64
+            // If any symbol cannot be found, fallback to hook ShouldDenyAccessToMember
+            // The flag will only be set if we need the feature, so we don't need to check it
+
+            HOOK_SYMBOL("_ZN3art9hiddenapi24ShouldDenyAccessToMemberINS_8ArtFieldEEEbPT_RKNSt3__18functionIFNS0_13AccessContextEvEEENS0_12AccessMethodE", true);
+            HOOK_SYMBOL("_ZN3art9hiddenapi24ShouldDenyAccessToMemberINS_9ArtMethodEEEbPT_RKNSt3__18functionIFNS0_13AccessContextEvEEENS0_12AccessMethodE", true);
         }
     } else {
         // Android P, all accesses from platform domain will be allowed
-        if (application) {
-            HOOK_SYMBOL("_ZN3art9hiddenapi6detail19GetMemberActionImplINS_8ArtFieldEEENS0_6ActionEPT_NS_20HiddenApiAccessFlags7ApiListES4_NS0_12AccessMethodE");
-            HOOK_SYMBOL("_ZN3art9hiddenapi6detail19GetMemberActionImplINS_9ArtMethodEEENS0_6ActionEPT_NS_20HiddenApiAccessFlags7ApiListES4_NS0_12AccessMethodE");
+        if (LIKELY(application)) {
+            HOOK_SYMBOL("_ZN3art9hiddenapi6detail19GetMemberActionImplINS_8ArtFieldEEENS0_6ActionEPT_NS_20HiddenApiAccessFlags7ApiListES4_NS0_12AccessMethodE", true);
+            HOOK_SYMBOL("_ZN3art9hiddenapi6detail19GetMemberActionImplINS_9ArtMethodEEENS0_6ActionEPT_NS_20HiddenApiAccessFlags7ApiListES4_NS0_12AccessMethodE", true);
         }
     }
 
@@ -141,11 +171,10 @@ static bool FakeProcessProfilingInfo() {
 }
 
 bool Android::DisableProfileSaver() {
-    // If users need this feature very much,
-    // we may find these symbols during initialization in the future to reduce time consumption.
+    // I think most users don't need this feature, so I don't get the symbol during initialization...
     void* process_profiling_info;
     {
-        ElfImg handle("libart.so");
+        ElfImage handle("libart.so");
 
         // MIUI added, size of the original function is smaller than size of a direct jump trampoline
         // and cannot be hooked, else we will write overflow and corrupt the next function
@@ -156,6 +185,11 @@ bool Android::DisableProfileSaver() {
                                               : version < kS ? "_ZN3art12ProfileSaver20ProcessProfilingInfoEbPt"
                                               : "_ZN3art12ProfileSaver20ProcessProfilingInfoEbbPt";
             process_profiling_info = handle.GetSymbolAddress(symbol);
+
+            // Android 15 QPR1
+            if (!process_profiling_info) {
+                process_profiling_info = handle.GetSymbolAddress("_ZN3art12ProfileSaver20ProcessProfilingInfoEbPt");
+            }
         }
     }
 
@@ -169,11 +203,11 @@ bool Android::DisableProfileSaver() {
     return true;
 }
 
-void Android::InitMembersFromRuntime(JavaVM* jvm, const ElfImg* handle) {
+void Android::InitMembersFromRuntime(JavaVM* jvm, const ElfImage* handle) {
     if (version < kQ) {
         // ClassLinker is unnecessary before R.
         // JIT was added in Android N but MoveObsoleteMethod was added in Android O
-        // and didn't find a stable way to retrieve jit code cache until Q
+        // and I didn't find a stable way to retrieve jit code cache until Q
         // from Runtime object, so try to retrieve from ProfileSaver.
         // TODO: Still clearing jit info on Android N but only for jit-compiled methods.
         if (version >= kO) {
@@ -192,17 +226,23 @@ void Android::InitMembersFromRuntime(JavaVM* jvm, const ElfImg* handle) {
     // This commit added a pointer member between `class_linker_` and `java_vm_`. Need to calibrate offset here.
     // https://android.googlesource.com/platform/art/+/4dcac3629ea5925e47b522073f3c49420e998911
     // https://github.com/crdroidandroid/android_art/commit/aa7999027fa830d0419c9518ab56ceb7fcf6f7f1
-    bool has_smaller_irt = handle->GetSymbolAddress(
-            "_ZN3art17SmallIrtAllocator10DeallocateEPNS_8IrtEntryE", false) != nullptr;
+    // https://android.googlesource.com/platform/art/+/849d09a81907f16d8ccc6019b8baf86a304b730c
+    bool has_smaller_irt = version >= kT
+            || handle->HasSymbol("_ZN3art17SmallIrtAllocator10DeallocateEPNS_8IrtEntryE")
+            || handle->HasSymbol("_ZN3art3jni17SmallLrtAllocatorC2Ev");
 
-    size_t jvm_offset = OffsetOfJavaVm(has_smaller_irt);
-    auto val = jvm_offset
-            ? reinterpret_cast<std::unique_ptr<JavaVM>*>(reinterpret_cast<uintptr_t>(runtime) + jvm_offset)->get()
-            : nullptr;
-    if (LIKELY(val == jvm)) {
-        LOGD("JavaVM offset matches the default offset");
-    } else {
-        LOGW("JavaVM offset mismatches the default offset, try search the memory of Runtime");
+    std::vector<size_t> known_offsets = OffsetOfJavaVm(has_smaller_irt);
+    size_t jvm_offset = 0;
+    for (size_t offset : known_offsets) {
+        auto val = reinterpret_cast<std::unique_ptr<JavaVM>*>(
+                reinterpret_cast<uintptr_t>(runtime) + offset)->get();
+        if (val == jvm) {
+            jvm_offset = offset;
+            break;
+        }
+    }
+    if (UNLIKELY(!jvm_offset)) {
+        LOGW("JavaVM offset mismatches default offsets, trying a linear search");
         int offset = Memory::FindOffset(runtime, jvm, 1024, 4);
         if (UNLIKELY(offset == -1)) {
             LOGE("Failed to find java vm from Runtime");
@@ -215,7 +255,7 @@ void Android::InitMembersFromRuntime(JavaVM* jvm, const ElfImg* handle) {
     InitJitCodeCache(runtime, jvm_offset, handle);
 }
 
-void Android::InitClassLinker(void* runtime, size_t java_vm_offset, const ElfImg* handle, bool has_small_irt) {
+void Android::InitClassLinker(void* runtime, size_t java_vm_offset, const ElfImage* handle, bool has_small_irt) {
     // ClassStatus::kVisiblyInitialized is not implemented in official Android Q
     // but some weird ROMs cherry-pick this commit to these Q ROMs
     // https://github.com/crdroidandroid/android_art/commit/ef76ced9d2856ac988377ad99288a357697c4fa2
@@ -238,7 +278,7 @@ void Android::InitClassLinker(void* runtime, size_t java_vm_offset, const ElfImg
     SetClassLinker(class_linker);
 }
 
-void Android::InitJitCodeCache(void *runtime, size_t java_vm_offset, const ElfImg *handle) {
+void Android::InitJitCodeCache(void *runtime, size_t java_vm_offset, const ElfImage *handle) {
     move_obsolete_method_ = reinterpret_cast<void (*)(void*, void*, void*)>(handle->GetSymbolAddress(
             "_ZN3art3jit12JitCodeCache18MoveObsoleteMethodEPNS_9ArtMethodES3_"));
     if (UNLIKELY(!move_obsolete_method_)) {

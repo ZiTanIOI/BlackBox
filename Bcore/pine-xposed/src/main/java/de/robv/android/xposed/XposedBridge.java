@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Set;
 
 import de.robv.android.xposed.XC_MethodHook.MethodHookParam;
+
 import top.canyie.pine.Pine;
 import top.canyie.pine.callback.MethodHook;
 import top.canyie.pine.xposed.PineXposed;
@@ -50,6 +51,26 @@ public final class XposedBridge {
 	// Pine changed: Move sLoadedPackageCallbacks to PineXposed.
 	// /*package*/ static final CopyOnWriteSortedSet<XC_LoadPackage> sLoadedPackageCallbacks = new CopyOnWriteSortedSet<>();
 
+	private static HookProvider hookProvider = HookProvider.PINE;
+
+	public interface HookProvider {
+		HookProvider PINE = new HookProvider() {
+			@Override
+			public void hook(Member method, CopyOnWriteSortedSet<XC_MethodHook> callbacks) {
+				Handler handler = new Handler(callbacks);
+				Pine.hook(method, handler);
+			}
+
+			@Override
+			public Object invokeOriginal(Member method, Object thisObject, Object[] args) throws NullPointerException, IllegalAccessException, IllegalArgumentException, InvocationTargetException {
+				return Pine.invokeOriginalMethod(method, thisObject, args);
+			}
+		};
+		void hook(Member method, CopyOnWriteSortedSet<XC_MethodHook> callbacks);
+		Object invokeOriginal(Member method, Object thisObject, Object[] args) throws
+				NullPointerException, IllegalAccessException, IllegalArgumentException, InvocationTargetException;
+	}
+
 	private XposedBridge() {}
 
 	/**
@@ -62,6 +83,14 @@ public final class XposedBridge {
 	// Pine added
 	public static void setXposedVersion(int version) {
 		XPOSED_BRIDGE_VERSION = version;
+	}
+
+	public static HookProvider getHookProvider() {
+		return hookProvider;
+	}
+
+	public static void setHookProvider(HookProvider provider) {
+		hookProvider = provider;
 	}
 
 	// Pine added: New API for querying supported features
@@ -105,6 +134,15 @@ public final class XposedBridge {
 	}
 
 	/**
+	 * Deoptimize a method to avoid callee being inlined.
+	 *
+	 * @param method The method to deoptmize. Generally it should be a caller of a method that is inlined.
+	 */
+	public static void deoptimizeMethod(Member method) {
+		Pine.decompile(method, true);
+	}
+
+	/**
 	 * Hook any method (or constructor) with the specified callback. See below for some wrappers
 	 * that make it easier to find a method/constructor in one step.
 	 *
@@ -123,7 +161,7 @@ public final class XposedBridge {
 		if (!(hookMethod instanceof Method) && !(hookMethod instanceof Constructor<?>)) {
 			throw new IllegalArgumentException("Only methods and constructors can be hooked: " + hookMethod.toString());
 		}
-		// Pine changed: We can hook interfaces's non-abstract methods
+		// Pine changed: We can hook interfaces' non-abstract methods
 		/*else if (hookMethod.getDeclaringClass().isInterface()) {
 			throw new IllegalArgumentException("Cannot hook interfaces: " + hookMethod.toString());
 		}*/ else if (Modifier.isAbstract(hookMethod.getModifiers())) {
@@ -143,8 +181,7 @@ public final class XposedBridge {
 		callbacks.add(callback);
 
 		if (newMethod) {
-			Handler handler = new Handler(callbacks);
-			Pine.hook(hookMethod, handler);
+			hookProvider.hook(hookMethod, callbacks);
 		}
 
 		return callback.new Unhook(hookMethod);
@@ -210,6 +247,8 @@ public final class XposedBridge {
 	/**
 	 * Basically the same as {@link Method#invoke}, but calls the original method
 	 * as it was before the interception by Xposed. Also, access permissions are not checked.
+	 * If the given method is not hooked, the behavior is undefined, Pine does not guarantee this
+	 * will always work and may crash on other Xposed framework implementations.
 	 *
 	 * <p class="caution">There are very few cases where this method is needed. A common mistake is
 	 * to replace a method and then invoke the original one based on dynamic conditions. This
@@ -234,7 +273,7 @@ public final class XposedBridge {
 	 */
 	public static Object invokeOriginalMethod(Member method, Object thisObject, Object[] args)
 			throws NullPointerException, IllegalAccessException, IllegalArgumentException, InvocationTargetException {
-		return Pine.invokeOriginalMethod(method, thisObject, args);
+		return hookProvider.invokeOriginal(method, thisObject, args);
 	}
 
 	// Pine added: Handler class for help dispatch
