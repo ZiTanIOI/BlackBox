@@ -3,6 +3,13 @@ plugins {
     id 'kotlin-android'
 }
 
+// release 签名参数放在根目录 keystore.properties（已 gitignore，不入库）
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+def keystoreProperties = new Properties()
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+}
+
 android {
     compileSdkVersion 29
     buildToolsVersion "29.0.2"
@@ -59,6 +66,18 @@ android {
         }
     }
 
+    signingConfigs {
+        release {
+            if (keystorePropertiesFile.exists()) {
+                // storeFile 相对路径按 app 模块目录解析（../zitan.jks 即项目根目录）
+                storeFile file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+        }
+    }
+
     buildTypes {
         debug {
             debuggable true
@@ -70,6 +89,9 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (keystorePropertiesFile.exists()) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 

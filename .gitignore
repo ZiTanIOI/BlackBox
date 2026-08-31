@@ -89,3 +89,7 @@ lint/tmp/
 
 # build log
 build-log.txt
+
+# release signing（密钥与密码不入库）
+keystore.properties
+*.keystore
