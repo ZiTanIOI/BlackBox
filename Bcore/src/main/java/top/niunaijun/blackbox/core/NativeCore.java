@@ -37,6 +37,12 @@ public class NativeCore {
 
     public static native void addIORule(String targetPath, String relocatePath);
 
+    /**
+     * 是否对已加载的 so 做 libc GOT hook（NativeIOHook）。
+     * 反作弊类应用可能扫描被改写的 GOT 表项，可在 bindApplication 阶段按包名关掉。
+     */
+    public static native void enableLibcHook(boolean enabled);
+
     public static native void hideXposed();
 
     /**
@@ -44,6 +50,14 @@ public class NativeCore {
      * 重新扫描并为新库的 GOT 打上 IO 重定向补丁。
      */
     public static native void rescanIOHook();
+
+    /**
+     * 登记 libxposed 102 模块 native_init.list 里的 so 名。模块 Java 入口
+     * System.loadLibrary 这些 so 时，native 层的 dlopen 包装按名单拦截，
+     * 调用 so 导出的 native_init 完成回调注册，此后每次 dlopen 成功都会
+     * 通知模块（libil2cpp.so 加载即 dump 的触发源）。
+     */
+    public static native void addXposedNativeLibs(String[] libNames);
 
     public static void dumpDex(ClassLoader classLoader, String packageName) {
         List<Long> cookies = DexFileCompat.getCookies(classLoader);

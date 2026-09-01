@@ -34,6 +34,7 @@
 
 #include "../IO.h"
 #include "../Log.h"
+#include "LibXposedNative.h"
 
 #include <errno.h>
 
@@ -74,6 +75,12 @@ int (*real_truncate)(const char *, off_t);
 DIR *(*real_opendir)(const char *);
 void *(*real_dlopen)(const char *, int);
 void *(*real_android_dlopen_ext)(const char *, int, const android_dlextinfo *);
+// linker 导出的显式 caller 版本。libdl 的 dlopen/android_dlopen_ext 用返回地址
+// 当调用方来选 linker 命名空间；GOT 包装把这一跳变成 libblackbox（宿主命名
+// 空间），应用 so 里发起的 dlopen 就会在错误的命名空间里解析（表现为
+// dlopen failed: library "xxx.so" not found）。这里直接把真实调用方传回去。
+void *(*real_loader_dlopen)(const char *, int, const void *);
+void *(*real_loader_android_dlopen_ext)(const char *, int, const android_dlextinfo *, const void *);
 int (*real_open64)(const char *, int, ...);
 int (*real_openat64)(int, const char *, int, ...);
 int (*real_stat)(const char *, struct stat *);
@@ -341,16 +348,30 @@ int my_faccessat2(int dirfd, const char *path, int mode, int flags) {
 // 没有被补丁；已被补丁的库再 dlopen 新库时会经过这里，立即对新库补丁。
 // 包装必须等 real 返回后才触发重扫，否则会在 linker 加载中途扫描半成品映射
 void *my_dlopen(const char *filename, int flags) {
-    void *handle = real_dlopen(filename, flags);
+    void *handle;
+    if (real_loader_dlopen != nullptr) {
+        handle = real_loader_dlopen(filename, flags, __builtin_return_address(0));
+    } else {
+        handle = real_dlopen(filename, flags);
+    }
     if (handle != nullptr) {
+        // 先做 102 native 模块的注册/回调（模块 native_init 里可能经 hook_func
+        // 请求补丁，自己会触发全量重扫），再常规刷新 IO 补丁
+        LibXposedNative::onDlopen(filename, handle);
         NativeIOHook::install();
     }
     return handle;
 }
 
 void *my_android_dlopen_ext(const char *filename, int flags, const android_dlextinfo *info) {
-    void *handle = real_android_dlopen_ext(filename, flags, info);
+    void *handle;
+    if (real_loader_android_dlopen_ext != nullptr) {
+        handle = real_loader_android_dlopen_ext(filename, flags, info, __builtin_return_address(0));
+    } else {
+        handle = real_android_dlopen_ext(filename, flags, info);
+    }
     if (handle != nullptr) {
+        LibXposedNative::onDlopen(filename, handle);
         NativeIOHook::install();
     }
     return handle;
@@ -396,12 +417,110 @@ HookEntry g_entries[] = {
 };
 
 // resolveRemaining: 通过 dlsym 兜底填充仍未解析的 real 指针
+static void *g_foundLoaderDlopen;
+static void *g_foundLoaderDlopenExt;
+
+// __loader_* 不在应用可见的符号搜索组里（dlsym 拿不到），但 libdl 自身是
+// BIND_NOW：它的重定位表里就存着这两个函数的最终地址。用 dladdr 拿到 libdl
+// 的加载基址后解析内存中的 ELF，把 GOT 槽里的地址读出来。
+void scanLoaderSymbolsInLibdl(uintptr_t base) {
+    auto *ehdr = reinterpret_cast<const ElfW(Ehdr) *>(base);
+    if (ehdr->e_phoff == 0 || ehdr->e_phnum == 0 || ehdr->e_phnum > 128) return;
+    auto *phdr = reinterpret_cast<const ElfW(Phdr) *>(base + ehdr->e_phoff);
+    ElfW(Dyn) *dyn = nullptr;
+    size_t dynMaxEntries = 0;
+    for (int i = 0; i < ehdr->e_phnum; ++i) {
+        if (phdr[i].p_type == PT_DYNAMIC) {
+            dyn = reinterpret_cast<ElfW(Dyn) *>(base + phdr[i].p_vaddr);
+            dynMaxEntries = phdr[i].p_memsz / sizeof(ElfW(Dyn));
+            break;
+        }
+    }
+    if (dyn == nullptr || dynMaxEntries == 0 || dynMaxEntries > 65536) return;
+
+    ElfW(Addr) jmprel = 0, rela = 0, symtab = 0, strtab = 0;
+    size_t pltrelsz = 0, relasz = 0, strsz = 0;
+    size_t scanned = 0;
+    for (ElfW(Dyn) *d = dyn; scanned < dynMaxEntries; ++d, ++scanned) {
+        ElfW(Sxword) tag = d->d_tag;
+        if (tag == DT_NULL) break;
+        switch (tag) {
+            case DT_JMPREL: jmprel = d->d_un.d_ptr; break;
+            case DT_PLTRELSZ: pltrelsz = d->d_un.d_val; break;
+            case DT_RELA: rela = d->d_un.d_ptr; break;
+            case DT_RELASZ: relasz = d->d_un.d_val; break;
+            case DT_SYMTAB: symtab = d->d_un.d_ptr; break;
+            case DT_STRTAB: strtab = d->d_un.d_ptr; break;
+            case DT_STRSZ: strsz = d->d_un.d_val; break;
+            default: break;
+        }
+    }
+    if ((jmprel == 0 && rela == 0) || symtab == 0 || strtab == 0) return;
+
+    auto abs = [&](ElfW(Addr) v) -> uintptr_t {
+        return v >= base ? static_cast<uintptr_t>(v) : base + static_cast<uintptr_t>(v);
+    };
+    auto *syms = reinterpret_cast<ElfW(Sym) *>(abs(symtab));
+    auto *strs = reinterpret_cast<const char *>(abs(strtab));
+
+    auto scan = [&](uintptr_t relAddr, size_t totalBytes) {
+        if (totalBytes == 0 || totalBytes > 4 * 1024 * 1024) return;
+        size_t count = totalBytes / sizeof(ElfW(Rela));
+        auto *entries = reinterpret_cast<ElfW(Rela) *>(relAddr);
+        for (size_t i = 0; i < count; ++i) {
+            uint32_t type = ELF64_R_TYPE(entries[i].r_info);
+            if (type != R_AARCH64_JUMP_SLOT && type != R_AARCH64_GLOB_DAT) continue;
+            uint32_t symIdx = ELF64_R_SYM(entries[i].r_info);
+            uint64_t symOff = static_cast<uint64_t>(symIdx) * sizeof(ElfW(Sym));
+            if (strsz == 0 || symOff >= strsz) continue;
+            if (syms[symIdx].st_name >= strsz) continue;
+            const char *nm = strs + syms[symIdx].st_name;
+            void **slot = reinterpret_cast<void **>(base + entries[i].r_offset);
+            if (*slot == nullptr) continue;
+            if (g_foundLoaderDlopen == nullptr && strcmp(nm, "__loader_dlopen") == 0) {
+                g_foundLoaderDlopen = *slot;
+            } else if (g_foundLoaderDlopenExt == nullptr && strcmp(nm, "__loader_android_dlopen_ext") == 0) {
+                g_foundLoaderDlopenExt = *slot;
+            }
+        }
+    };
+    if (jmprel != 0 && pltrelsz > 0) scan(abs(jmprel), pltrelsz);
+    if (rela != 0 && relasz > 0) scan(abs(rela), relasz);
+}
+
+void *resolveLoaderSymbol(const char *name) {
+    void *fn = dlsym(RTLD_DEFAULT, name);
+    if (fn != nullptr) return fn;
+    if (g_foundLoaderDlopen == nullptr && g_foundLoaderDlopenExt == nullptr) {
+        void *anchor = dlsym(RTLD_DEFAULT, "dlopen");
+        Dl_info di{};
+        if (anchor != nullptr && dladdr(anchor, &di) != 0 && di.dli_fbase != nullptr) {
+            scanLoaderSymbolsInLibdl(reinterpret_cast<uintptr_t>(di.dli_fbase));
+        }
+        ALOGD("NativeIOHook: libdl scan dlopen=%p ext=%p", g_foundLoaderDlopen, g_foundLoaderDlopenExt);
+    }
+    if (strcmp(name, "__loader_dlopen") == 0) return g_foundLoaderDlopen;
+    return g_foundLoaderDlopenExt;
+}
+
 void resolveRealsViaDlsym() {
     for (auto &e: g_entries) {
         if (*e.real == nullptr) {
             *e.real = dlsym(RTLD_DEFAULT, e.name);
         }
     }
+    if (real_loader_dlopen == nullptr) {
+        real_loader_dlopen = reinterpret_cast<void *(*)(const char *, int, const void *)>(
+                resolveLoaderSymbol("__loader_dlopen"));
+    }
+    if (real_loader_android_dlopen_ext == nullptr) {
+        real_loader_android_dlopen_ext =
+                reinterpret_cast<void *(*)(const char *, int, const android_dlextinfo *, const void *)>(
+                        resolveLoaderSymbol("__loader_android_dlopen_ext"));
+    }
+    ALOGD("NativeIOHook: loader dlopen resolver %s, ext resolver %s",
+          real_loader_dlopen != nullptr ? "ok" : "missing",
+          real_loader_android_dlopen_ext != nullptr ? "ok" : "missing");
 }
 
 // ---------------------------------------------------------------------------
@@ -483,6 +602,46 @@ struct ScanCounters {
     int processed;
     int newLibs;
 };
+
+// ---------------------------------------------------------------------------
+// libxposed 102 native 模块的命名 hook 表。模块经 hook_func(func, replace,
+// backup) 请求 hook 任意导出函数（典型如 kill/_exit/exit/raise/abort），
+// func 是模块 so 解析到的函数地址，dladdr 反查导出符号名后对 /data 下所有
+// 库（含后续加载）改写 GOT。与 inline hook 不同，只影响经各自 PLT/GOT 的
+// 调用方——游戏 so 内的调用均可覆盖，libc 内部调用不受影响。
+// 加锁顺序恒为 installMutex -> 命名表锁；扫描路径只拿命名表锁。
+// ---------------------------------------------------------------------------
+struct NamedHook {
+    std::string name;
+    void *replace;
+    void *real;
+    bool active;
+};
+
+std::vector<NamedHook> g_namedHooks;
+std::mutex g_namedHooksMutex;
+
+NamedHook *findNamedHookLocked(const char *name) {
+    for (auto &mh: g_namedHooks) {
+        if (mh.name == name) return &mh;
+    }
+    return nullptr;
+}
+
+void applyNamedHooks(const char *nm, uintptr_t base, ElfW(Addr) gotOffset) {
+    std::lock_guard<std::mutex> lock(g_namedHooksMutex);
+    for (auto &mh: g_namedHooks) {
+        if (mh.name != nm) continue;
+        void **got = reinterpret_cast<void **>(base + gotOffset);
+        if (!mh.active) {
+            // 已 unhook：把此前指向 replace 的槽恢复为真实函数
+            if (*got == mh.replace) writeGotEntry(got, mh.real);
+        } else if (*got != mh.replace) {
+            writeGotEntry(got, mh.replace);
+        }
+        break;
+    }
+}
 
 // dl_iterate_phdr 回调，全程持有 linker 锁，可安全读写目标库内存
 int hookCallback(struct dl_phdr_info *info, size_t, void *data) {
@@ -575,24 +734,27 @@ int hookCallback(struct dl_phdr_info *info, size_t, void *data) {
             if (strsz == 0 || symOff >= strsz) continue;
             if (syms[symIdx].st_name >= strsz) continue;
             const char *nm = strs + syms[symIdx].st_name;
-            for (auto &e: g_entries) {
-                if (dlopenOnly && strcmp(e.name, "dlopen") != 0 &&
-                    strcmp(e.name, "android_dlopen_ext") != 0) {
-                    continue;
+                for (auto &e: g_entries) {
+                    if (dlopenOnly && strcmp(e.name, "dlopen") != 0 &&
+                        strcmp(e.name, "android_dlopen_ext") != 0) {
+                        continue;
+                    }
+                    if (strcmp(nm, e.name) != 0) continue;
+                    void **got = reinterpret_cast<void **>(base + entries[i].r_offset);
+                    if (*got == e.hook) break; // 已打过
+                    if (*e.real == nullptr && *got != nullptr) {
+                        *e.real = *got;
+                    }
+                    writeGotEntry(got, e.hook);
+                    if (firstGot == 0) {
+                        firstGot = reinterpret_cast<uintptr_t>(got);
+                        firstVal = e.hook;
+                    }
+                    break;
                 }
-                if (strcmp(nm, e.name) != 0) continue;
-                void **got = reinterpret_cast<void **>(base + entries[i].r_offset);
-                if (*got == e.hook) break; // 已打过
-                if (*e.real == nullptr && *got != nullptr) {
-                    *e.real = *got;
+                if (!dlopenOnly) {
+                    applyNamedHooks(nm, base, entries[i].r_offset);
                 }
-                writeGotEntry(got, e.hook);
-                if (firstGot == 0) {
-                    firstGot = reinterpret_cast<uintptr_t>(got);
-                    firstVal = e.hook;
-                }
-                break;
-            }
         }
         return true;
     };
@@ -607,12 +769,10 @@ int hookCallback(struct dl_phdr_info *info, size_t, void *data) {
     return 0;
 }
 
-} // namespace
+std::mutex g_installMutex;
 
-void NativeIOHook::install() {
-    static std::mutex installMutex;
-    std::lock_guard<std::mutex> lock(installMutex);
-
+// 调用方必须已持有 g_installMutex
+void doInstallLocked() {
     if (real_fopen == nullptr) {
         resolveRealsViaDlsym();
         if (real_fopen == nullptr || real_open == nullptr) {
@@ -626,11 +786,79 @@ void NativeIOHook::install() {
     ALOGD("NativeIOHook: scanned %d libraries (%d new)", counters.processed, counters.newLibs);
 }
 
+} // namespace
+
+void NativeIOHook::install() {
+    std::lock_guard<std::mutex> lock(g_installMutex);
+    doInstallLocked();
+}
+
+bool NativeIOHook::addNamedHook(const void *func, void *replace, void **backup) {
+    if (func == nullptr || replace == nullptr || backup == nullptr) return false;
+    Dl_info di{};
+    if (dladdr(const_cast<void *>(func), &di) == 0 || di.dli_sname == nullptr ||
+        di.dli_saddr == nullptr) {
+        ALOGD("NativeIOHook: hook_func: cannot resolve symbol for %p", func);
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> installLock(g_installMutex);
+        {
+            std::lock_guard<std::mutex> lock(g_namedHooksMutex);
+            NamedHook *existing = findNamedHookLocked(di.dli_sname);
+            if (existing != nullptr) {
+                existing->replace = replace;
+                existing->real = di.dli_saddr;
+                existing->active = true;
+            } else {
+                NamedHook mh{};
+                mh.name = di.dli_sname;
+                mh.replace = replace;
+                mh.real = di.dli_saddr;
+                mh.active = true;
+                g_namedHooks.push_back(mh);
+            }
+        }
+        // 新 hook 要对已加载库生效：清缓存强制全量重扫（缓存命中会早退跳过）
+        g_patchedLibs.clear();
+        doInstallLocked();
+    }
+    *backup = di.dli_saddr;
+    ALOGD("NativeIOHook: named hook %s -> %p (real %p)", di.dli_sname, replace, di.dli_saddr);
+    return true;
+}
+
+bool NativeIOHook::removeNamedHook(const void *func) {
+    if (func == nullptr) return false;
+    Dl_info di{};
+    if (dladdr(const_cast<void *>(func), &di) == 0 || di.dli_sname == nullptr) return false;
+    std::lock_guard<std::mutex> installLock(g_installMutex);
+    {
+        std::lock_guard<std::mutex> lock(g_namedHooksMutex);
+        NamedHook *existing = findNamedHookLocked(di.dli_sname);
+        if (existing == nullptr) return false;
+        existing->active = false;
+    }
+    g_patchedLibs.clear();
+    doInstallLocked();
+    ALOGD("NativeIOHook: named hook %s removed", di.dli_sname);
+    return true;
+}
+
 #else // !__aarch64__
 
 void NativeIOHook::install() {
     // 仅实现了 arm64 的 GOT 补丁，其他架构保持原行为
     ALOGD("NativeIOHook: not supported on this arch, skipped");
+}
+
+bool NativeIOHook::addNamedHook(const void *, void *, void **) {
+    // 无 GOT 补丁通路，102 native 模块的 hook_func 不可用（模块会跳过自身 hook）
+    return false;
+}
+
+bool NativeIOHook::removeNamedHook(const void *) {
+    return false;
 }
 
 #endif // __aarch64__

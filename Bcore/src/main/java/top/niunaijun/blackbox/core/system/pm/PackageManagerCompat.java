@@ -17,7 +17,14 @@ import android.content.res.AssetManager;
 import android.content.res.Resources;
 import android.os.Build;
 
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import black.android.content.pm.BRApplicationInfoL;
@@ -31,6 +38,8 @@ import top.niunaijun.blackbox.core.env.BEnvironment;
 import top.niunaijun.blackbox.entity.pm.InstallOption;
 import top.niunaijun.blackbox.utils.ArrayUtils;
 import top.niunaijun.blackbox.utils.FileUtils;
+import top.niunaijun.blackbox.utils.NativeUtils;
+import top.niunaijun.blackbox.utils.Slog;
 import top.niunaijun.blackbox.utils.compat.BuildCompat;
 
 /**
@@ -276,6 +285,74 @@ public class PackageManagerCompat {
         return ii;
     }
 
+    /**
+     * 把设备的 base/split APK 里属于当前 ABI 的 so 解压进容器 lib 目录。
+     * copyNativeLib 对没有 lib/ 条目的 apk 直接快速跳过，逐个扫不会互相干扰。
+     */
+    private static final Object sExtractLock = new Object();
+    private static final String EXTRACTED_MARKER = ".libs_extracted";
+
+    private static boolean isNativeLibsExtracted(File libDir, String sourceDir) {
+        File marker = new File(libDir, EXTRACTED_MARKER);
+        if (!marker.isFile()) return false;
+        try (BufferedReader reader = new BufferedReader(new FileReader(marker))) {
+            return sourceDir.equals(reader.readLine());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static void markNativeLibsExtracted(File libDir, String sourceDir) throws Exception {
+        FileWriter writer = new FileWriter(new File(libDir, EXTRACTED_MARKER));
+        writer.write(sourceDir);
+        writer.close();
+    }
+
+    private static final java.util.concurrent.ExecutorService sExtractExecutor =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+    private static final java.util.Set<String> sExtractScheduled =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    private static void scheduleNativeLibsExtract(String packageName, String sourceDir, File libDir) {
+        String key = packageName + "@" + sourceDir;
+        if (!sExtractScheduled.add(key)) return;
+        sExtractExecutor.execute(() -> {
+            try {
+                synchronized (sExtractLock) {
+                    if (!isNativeLibsExtracted(libDir, sourceDir)) {
+                        extractNativeLibs(packageName, sourceDir, libDir);
+                        markNativeLibsExtracted(libDir, sourceDir);
+                        Slog.e("PackageManagerCompat", "native libs extracted for " + packageName);
+                    }
+                }
+            } catch (Throwable t) {
+                Slog.e("PackageManagerCompat", "extract native libs failed for " + packageName, t);
+                sExtractScheduled.remove(key);
+            }
+        });
+    }
+
+    private static void extractNativeLibs(String packageName, String sourceDir, File libDir) {
+        List<String> apks = new ArrayList<>();
+        apks.add(sourceDir);
+        try {
+            ApplicationInfo real = BlackBoxCore.getPackageManager().getApplicationInfo(packageName, PackageManager.GET_META_DATA);
+            if (real.sourceDir != null) {
+                apks.add(real.sourceDir);
+            }
+            if (real.splitSourceDirs != null) {
+                Collections.addAll(apks, real.splitSourceDirs);
+            }
+        } catch (Throwable ignored) {
+        }
+        for (String apk : apks) {
+            try {
+                NativeUtils.copyNativeLib(new File(apk), libDir);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
     public static ApplicationInfo generateApplicationInfo(BPackage p, int flags, BPackageUserState state, int userId) {
         if (!checkUseInstalledOrHidden(flags, state, p.applicationInfo)) {
             return null;
@@ -300,6 +377,24 @@ public class PackageManagerCompat {
         // 否则模块加载后 System.loadLibrary 找不到自带的 .so
         if (!p.installOption.isFlag(InstallOption.FLAG_SYSTEM) || p.installOption.isFlag(InstallOption.FLAG_XPOSED)) {
             ai.nativeLibraryDir = BEnvironment.getAppLibDir(ai.packageName).getAbsolutePath();
+        } else {
+            // 按系统方式导入的应用统一把 so 解压进容器 lib 目录并改指过去：
+            // 1) extractNativeLibs=false 的应用系统不解压，原始 nativeLibraryDir 是空目录；
+            // 2) 部分引擎（Unity 改包等）按 nativeLibraryDir 拼路径 dlopen，
+            //    在容器的 linker namespace 里解析 /data/app 下的库可能失败；
+            //    从容器自身路径加载则始终可用。
+            // getPackageInfo 调用非常频繁，解压必须只做一次：完成后写标记
+            // （内容为 sourceDir，应用更新路径变化时自动重新解压），
+            // 并用全局锁防止并发 binder 线程重复拷贝同一个大文件。
+            File libDir = BEnvironment.getAppLibDir(ai.packageName);
+            // 解压绝不能在查询路径上做（会持有 mPackages 锁拷贝上百 MB，把整个
+            // PM 服务堵死）：只看标记决定用哪个目录，未解压的丢给后台线程补，
+            // 完成前的查询保持原始 nativeLibraryDir（与旧版行为一致）
+            if (isNativeLibsExtracted(libDir, sourceDir)) {
+                ai.nativeLibraryDir = libDir.getAbsolutePath();
+            } else {
+                scheduleNativeLibsExtract(ai.packageName, sourceDir, libDir);
+            }
         }
         ai.processName = BPackageManagerService.fixProcessName(p.packageName, ai.packageName);
         ai.publicSourceDir = sourceDir;

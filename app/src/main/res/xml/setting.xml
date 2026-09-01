@@ -8,6 +8,7 @@
                 app:key="xp_enable"
                 app:title="@string/enable_xposed" />
 
+
         <Preference
                 android:dependency="xp_enable"
                 app:key="xp_module"
@@ -30,6 +31,11 @@
         <SwitchPreferenceCompat
                 app:key="root_hide"
                 app:title="@string/hide_root" />
+
+        <Preference
+                android:key="libc_hook_disable"
+                android:title="@string/libc_hook_disable"
+                android:summary="@string/libc_hook_disable_summary"/>
 
         <SwitchPreferenceCompat
                 app:key="daemon_enable"

@@ -90,6 +90,14 @@ public class BEnvironment {
         return new File(getHotfixDir(userId), packageName + "_odex");
     }
 
+    public static File getLibcHookDisableDir(int userId) {
+        return new File(getHotfixDir(), String.format(Locale.CHINA, "chook_disable/u%d", userId));
+    }
+
+    public static File getLibcHookDisableFile(int userId, String packageName) {
+        return new File(getLibcHookDisableDir(userId), packageName);
+    }
+
     public static File getPackageConf(String packageName) {
         return new File(getAppDir(packageName), "package.conf");
     }

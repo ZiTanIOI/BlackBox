@@ -131,7 +131,7 @@
  - 提供更多接口给开发者（虚拟定位、应用注入等）
 
 ## 赞助
-本项目为免费开源项目，日常维护耗费大量精力。如想赞助，请联系原作者 FBlackBox 团队。
+如想赞助，请联系原作者 FBlackBox 团队。
 
 ## 感谢
 - [VirtualApp](https://github.com/asLody/VirtualApp)

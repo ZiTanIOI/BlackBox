@@ -115,6 +115,12 @@ public class BXposedManagerService extends IBXposedManagerService.Stub implement
         BProcessManagerService.get().killAllProcesses();
     }
 
+    @Override
+    public void killPackageAsUser(String packageName, int userId) {
+        BProcessManagerService.get().killPackageAsUser(packageName, userId);
+    }
+
+
     private void loadModuleStateLr() {
         File xpModuleConf = BEnvironment.getXPModuleConf();
         if (!xpModuleConf.exists()) {
@@ -128,6 +134,11 @@ public class BXposedManagerService extends IBXposedManagerService.Stub implement
             mXposedConfig = new XposedConfig(parcel);
         } catch (Exception e) {
             e.printStackTrace();
+            // 解析失败（如旧版本字段错位）不能让 mXposedConfig 保持 null，
+            // 否则后续所有调用都会 NPE，主页会永远停在加载中
+            if (mXposedConfig == null) {
+                mXposedConfig = new XposedConfig();
+            }
         } finally {
             if (parcel != null) {
                 parcel.recycle();

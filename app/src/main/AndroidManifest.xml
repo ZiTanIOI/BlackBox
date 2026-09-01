@@ -33,6 +33,7 @@
         <activity android:name=".view.list.ListActivity" />
         <activity android:name=".view.fake.FakeManagerActivity" />
         <activity android:name=".view.xp.XpActivity" />
+        <activity android:name=".view.chook.LibcHookActivity" />
         <activity
             android:name=".view.main.ShortcutActivity"
             android:excludeFromRecents="true"

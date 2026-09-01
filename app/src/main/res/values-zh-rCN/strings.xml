@@ -20,6 +20,10 @@
     <string name="close_app_fake_location">是否关闭 %s 的虚拟定位</string>
     <string name="close_fake_location_success"> %s 已关闭虚拟定位</string>
     <string name="jump_module">点击跳转到模块管理界面</string>
+    <string name="libc_hook_disable">对指定程序禁用 libc hook</string>
+    <string name="libc_hook_disable_summary">勾选后对指定应用关闭 so 的 GOT hook（反作弊类应用需要）</string>
+    <string name="libc_hook_off_toast">已禁用 libc hook，进程已结束，下次启动生效</string>
+    <string name="libc_hook_on_toast">已恢复 libc hook，进程已结束，下次启动生效</string>
     <string name="module_setting">模块管理</string>
     <string name="enable_xposed">启用Xposed框架</string>
     <string name="hider">伪装</string>

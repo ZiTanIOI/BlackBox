@@ -82,4 +82,15 @@ public class BXposedManager extends BlackManager<IBXposedManagerService> {
             e.printStackTrace();
         }
     }
+
+    /**
+     * 杀掉指定应用的容器进程，用于配置（如 libc hook 禁用）变更后生效
+     */
+    public void killPackageAsUser(String packageName, int userId) {
+        try {
+            getService().killPackageAsUser(packageName, userId);
+        } catch (RemoteException e) {
+            e.printStackTrace();
+        }
+    }
 }

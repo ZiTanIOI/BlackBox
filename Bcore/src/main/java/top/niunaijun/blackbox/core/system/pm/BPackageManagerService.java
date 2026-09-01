@@ -112,10 +112,38 @@ public class BPackageManagerService extends IBPackageManagerService.Stub impleme
             BPackageSettings ps = mPackages.get(packageName);
             if (ps != null) {
                 BPackage p = ps.pkg;
-                return PackageManagerCompat.generateApplicationInfo(p, flags, ps.readUserState(userId), userId);
+                ApplicationInfo info = PackageManagerCompat.generateApplicationInfo(p, flags, ps.readUserState(userId), userId);
+                if (userId == BUserHandle.USER_XPOSED) {
+                    return fixModuleMissingSourceDir(info);
+                }
+                return info;
             }
         }
         return null;
+    }
+
+    /**
+     * 模块"从系统导入"时容器只记录安装时刻的 /data/app 随机路径快照；模块在
+     * 设备侧重装后该目录会整体更换，旧 sourceDir 失效导致模块静默加载失败。
+     * Xposed 域的包同时是设备上的真实应用，快照路径不存在时改用系统
+     * PackageManager 的最新路径补齐。
+     */
+    private ApplicationInfo fixModuleMissingSourceDir(ApplicationInfo info) {
+        if (info == null || info.sourceDir == null || new File(info.sourceDir).exists()) {
+            return info;
+        }
+        try {
+            ApplicationInfo sys = BlackBoxCore.getPackageManager().getApplicationInfo(info.packageName, 0);
+            if (sys != null && sys.sourceDir != null && new File(sys.sourceDir).exists()) {
+                info.sourceDir = sys.sourceDir;
+                info.publicSourceDir = sys.publicSourceDir;
+                info.nativeLibraryDir = sys.nativeLibraryDir;
+                info.splitSourceDirs = sys.splitSourceDirs;
+                info.splitPublicSourceDirs = sys.splitPublicSourceDirs;
+            }
+        } catch (PackageManager.NameNotFoundException ignored) {
+        }
+        return info;
     }
 
     @Override
@@ -408,6 +436,9 @@ public class BPackageManagerService extends IBPackageManagerService.Stub impleme
                     continue;
                 ApplicationInfo ai = PackageManagerCompat.generateApplicationInfo(ps.pkg, flags,
                         ps.readUserState(userId), userId);
+                if (ai != null && userId == BUserHandle.USER_XPOSED) {
+                    ai = fixModuleMissingSourceDir(ai);
+                }
                 if (ai != null) {
                     list.add(ai);
                 }

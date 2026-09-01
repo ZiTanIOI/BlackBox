@@ -20,6 +20,7 @@ import android.os.Binder;
 import android.os.Build;
 import android.os.ConditionVariable;
 import android.os.Environment;
+import android.os.Process;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.IInterface;
@@ -65,6 +66,7 @@ import top.niunaijun.blackbox.app.dispatcher.AppServiceDispatcher;
 import top.niunaijun.blackbox.core.CrashHandler;
 import top.niunaijun.blackbox.core.IBActivityThread;
 import top.niunaijun.blackbox.core.IOCore;
+import top.niunaijun.blackbox.core.LibcHookConfig;
 import top.niunaijun.blackbox.core.NativeCore;
 import top.niunaijun.blackbox.core.env.BEnvironment;
 import top.niunaijun.blackbox.core.env.VirtualRuntime;
@@ -78,6 +80,7 @@ import top.niunaijun.blackbox.fake.frameworks.BXposedManager;
 import top.niunaijun.blackbox.fake.hook.HookManager;
 import top.niunaijun.blackbox.fake.service.HCallbackProxy;
 import top.niunaijun.blackbox.hotfix.HotfixManager;
+import top.niunaijun.blackbox.xposed.LibXposedLoader;
 import top.niunaijun.blackbox.utils.NativeUtils;
 import top.niunaijun.blackbox.utils.Reflector;
 import top.niunaijun.blackbox.utils.Slog;
@@ -359,6 +362,8 @@ public class BActivityThread extends IBActivityThread.Stub {
         }
 
         NativeCore.init(Build.VERSION.SDK_INT);
+        // 用户可对指定应用禁用 libc GOT hook（反作弊兼容开关），需在 enableIO 前设置
+        NativeCore.enableLibcHook(!LibcHookConfig.isDisabled(getUserId(), packageName));
         assert packageContext != null;
         IOCore.get().enableRedirect(packageContext);
         fakeStorageManagerStatus();
@@ -501,7 +506,14 @@ public class BActivityThread extends IBActivityThread.Stub {
                     }
                     ModuleClassLoader moduleClassLoader = new ModuleClassLoader(moduleFile.getAbsolutePath(),
                             moduleLibDir.getAbsolutePath(), PineXposed.class.getClassLoader());
-                    PineXposed.loadOpenedModule(moduleFile.getAbsolutePath(), moduleClassLoader, false);
+                    // 旧 API（de.robv）入口在 assets/xposed_init；新版 libxposed API 入口在
+                    // META-INF/xposed/java_init.list，两套各读各的，避免对不存在的入口报错
+                    if (moduleClassLoader.getResourceAsStream("assets/xposed_init") != null) {
+                        PineXposed.loadOpenedModule(moduleFile.getAbsolutePath(), moduleClassLoader, false);
+                    }
+                    LibXposedLoader.loadModule(moduleFile.getAbsolutePath(), moduleClassLoader, moduleApp,
+                            vPackageName, context.getApplicationInfo(), isFirstApplication,
+                            context.getClassLoader(), vProcessName);
                 } catch (Throwable e) {
                     e.printStackTrace();
                 }

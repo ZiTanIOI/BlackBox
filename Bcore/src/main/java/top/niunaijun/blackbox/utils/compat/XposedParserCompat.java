@@ -31,13 +31,32 @@ public class XposedParserCompat {
             InstalledModule module = new InstalledModule();
             module.packageName = applicationInfo.packageName;
             module.enable = false;
-            module.desc = applicationInfo.metaData.getString("xposeddescription");
+            module.desc = readDescription(packageManager, applicationInfo);
             module.name = applicationInfo.loadLabel(packageManager).toString();
             module.main = readMain(applicationInfo.sourceDir);
             return module;
         } catch (RuntimeException e) {
             return null;
         }
+    }
+
+    /**
+     * 旧 API 模块的描述在 meta-data "xposeddescription"；
+     * 新版 libxposed API 模块用 android:description 资源（ApplicationInfo.descriptionRes）。
+     */
+    private static String readDescription(PackageManager packageManager, ApplicationInfo applicationInfo) {
+        if (applicationInfo.metaData != null) {
+            String desc = applicationInfo.metaData.getString("xposeddescription");
+            if (desc != null) return desc;
+        }
+        if (applicationInfo.descriptionRes != 0) {
+            try {
+                return packageManager.getResourcesForApplication(applicationInfo)
+                        .getText(applicationInfo.descriptionRes).toString();
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
     }
 
     public static boolean isXPModule(String file) {
@@ -53,7 +72,11 @@ public class XposedParserCompat {
         ZipFile zipFile = null;
         try {
             zipFile = new ZipFile(new File(apk));
-            ZipEntry entry = zipFile.getEntry("assets/xposed_init");
+            // 旧 API 模块入口在 assets/xposed_init；新版 libxposed API 模块在 META-INF/xposed/java_init.list
+            ZipEntry entry = zipFile.getEntry("META-INF/xposed/java_init.list");
+            if (entry == null) {
+                entry = zipFile.getEntry("assets/xposed_init");
+            }
             if (entry == null) {
                 throw new RuntimeException();
             }

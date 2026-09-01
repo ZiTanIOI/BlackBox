@@ -9,6 +9,7 @@ import top.niunaijun.blackbox.BlackBoxCore
 import top.niunaijun.blackboxa.R
 import top.niunaijun.blackboxa.app.AppManager
 import top.niunaijun.blackboxa.util.toast
+import top.niunaijun.blackboxa.view.chook.LibcHookActivity
 import top.niunaijun.blackboxa.view.gms.GmsManagerActivity
 import top.niunaijun.blackboxa.view.xp.XpActivity
 
@@ -30,6 +31,7 @@ class SettingFragment : PreferenceFragmentCompat() {
         xpEnable = findPreference("xp_enable")!!
         xpEnable.isChecked = BlackBoxCore.get().isXPEnable
 
+
         xpEnable.setOnPreferenceChangeListener { _, newValue ->
             BlackBoxCore.get().isXPEnable = (newValue == true)
             true
@@ -39,6 +41,12 @@ class SettingFragment : PreferenceFragmentCompat() {
         xpModule.setOnPreferenceClickListener {
             val intent = Intent(requireActivity(), XpActivity::class.java)
             requireContext().startActivity(intent)
+            true
+        }
+        //按应用禁用 libc GOT hook（反作弊兼容）
+        val libcHookPreference: Preference = findPreference("libc_hook_disable")!!
+        libcHookPreference.setOnPreferenceClickListener {
+            LibcHookActivity.start(requireContext())
             true
         }
         initGms()

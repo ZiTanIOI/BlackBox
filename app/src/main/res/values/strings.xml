@@ -19,6 +19,10 @@
     <string name="refresh_process">Refresh Processes</string>
     <string name="refresh_process_done">Container processes refreshed</string>
     <string name="jump_module">Go to Module Manager</string>
+    <string name="libc_hook_disable">Disable libc hook</string>
+    <string name="libc_hook_disable_summary">Disable GOT hooking of native libraries for selected apps (for apps with anti-cheat protection)</string>
+    <string name="libc_hook_off_toast">libc hook disabled, takes effect on next launch</string>
+    <string name="libc_hook_on_toast">libc hook restored, takes effect on next launch</string>
     <string name="module_setting">Module Manager</string>
     <string name="enable_xposed">Enable Xposed Framework</string>
     <string name="hider">Hide</string>

@@ -18,6 +18,14 @@ class NativeIOHook {
 public:
     // 扫描当前已加载库并打补丁。可重复调用（新库加载后刷新），幂等。
     static void install();
+
+    // libxposed 102 native 模块的 hook_func：按 func 真实地址反查导出符号名，
+    // 对 /data 下所有库（含后续加载的）改写 GOT 指向 replace，backup 带回真实
+    // 函数地址。仅 arm64 实现（依赖 GOT 补丁通路），其他架构返回 false。
+    static bool addNamedHook(const void *func, void *replace, void **backup);
+
+    // hook_func 的逆操作：按 func 反查符号，恢复被改写的 GOT。仅 arm64 实现。
+    static bool removeNamedHook(const void *func);
 };
 
 #endif //BLACKBOX_NATIVEIOHOOK_H

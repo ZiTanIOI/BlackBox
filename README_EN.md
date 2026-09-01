@@ -131,7 +131,7 @@ You can contribute to this project by making pull requests.
  - Provide more interfaces for developers (virtual location,  process injection, etc).
 
 ## Sponsorship
-This project is a free open source project, routine maintenance consumes a lot of time and effort. If you want to sponsor it, please contact the original author, the FBlackBox team.
+If you want to sponsor it, please contact the original author, the FBlackBox team.
 
 ## Credits
 - [VirtualApp](https://github.com/asLody/VirtualApp)
