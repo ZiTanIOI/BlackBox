@@ -19,6 +19,7 @@
 本 Fork 相比上游的主要改动（Android 16 适配）：
 - 修复虚拟应用启动失败（`HCallbackProxy` 空指针与 Android 16 上 `LaunchActivityItem` 换入失效导致的启动死循环）
 - 修复容器内 WebView 报 `net::ERR_CACHE_MISS`（`checkSelfPermission(INTERNET)` 误判 DENIED 导致 WebView 禁网，见 `checkPermissionForDevice` 等权限查询 hook）
+- 修复容器内 Unity 2021.3/2022.3 游戏开屏即退（见下方「Unity 游戏兼容」）
 - 新增热修复：长按应用可配置补丁 dex，分身启动前注入到类加载器（见下方「热修复」）
 
 如果条件允许，降级targetSdkVersion到28或以下可以获得更好的兼容性。
@@ -95,6 +96,34 @@
 #### Xposed相关
 - 已支持使用XP模块
 - Xposed已粗略过检测，[Xposed Checker](https://www.coolapk.com/apk/190247)、[XposedDetector](https://github.com/vvb2060/XposedDetector) 均无法检测
+
+## Unity 游戏兼容
+
+部分 Unity 版本（实测 2021.3、2022.3 的 china_unity 分支）在引擎初始化早期会做一次安装位置校验：用 `dladdr` 取 `libunity.so` 的加载路径，若以 `/data/data` 或 `/data/user` 开头，直接打一行日志并自杀（同一函数还会拿 APK 路径比对 `/data/data`、`/data/user`、`/storage`、`/sdcard`），logcat 里表现为
+
+```
+I/Unity   : MemoryManager: Using 'Dynamic Heap' Allocator.
+I/Unity   : Error: /data/data/<宿主包名>/blackbox/data/app/<分身包名>/lib/libunity.so
+I/Process : Process is going to kill itself!
+```
+
+容器把分身的 so 解压在自己的私有目录里，路径必然以 `/data/data` 开头，所以这类 Unity 游戏在容器内开屏即退。
+
+修复走的是**文件级补丁**（`UnityCompatPatch`），在分身进程启动、应用加载 so 之前执行。识别方式是**结构特征**，不绑定 Unity 版本、不依赖任何固定偏移或函数地址：
+
+1. 在文件里找以 NUL 结尾、且自身就是字符串起点的 `/data/data`、`/data/user`、`/storage`、`/sdcard`；
+2. 找 addend 指向这些字符串的 `R_*_RELATIVE` 重定位，并按“连续一段重定位”分组；
+3. 只补**同一组里同时出现 `/data/data` 与 `/data/user`** 的组——这正是校验那两张前缀表的特征（实测 2021.3 与 2022.3 分别是 6 条连续重定位，但字符串在 `.rodata` 里是否相邻完全不同）；孤立指向 `/storage` 等字符串的重定位不动，避免误伤别的用途；
+4. 把这些重定位的 addend 改指到 SONAME `libunity.so`：前缀永远不可能命中，游戏正常继续，**字符串内容一个字都不动**。
+
+要点与边界：
+
+- 只改容器自己解压出来的副本，**运行时零 hook、零内存改写**，因此和「libc hook 按应用开关」完全兼容：勾选后照样能玩 Unity 游戏；
+- 库里没有这几个字符串时（例如 2022.3 的 respin 分支实测就没有该校验）**完全不碰文件**；
+- 已打过补丁的文件再次启动时不会重复改写（addend 已不指向那些字符串）；
+- 若某版 Unity 把前缀写成内联常量、或改用别的机制，则补丁不会命中：日志里会打
+  `UnityCompatPatch: check strings present but no matching relocations, skip`
+  （字符串存在但重定位对不上）或干脆没有 `rewrote N install-location reloc(s)` 行，便于发现并适配。
 
 ## 热修复
 本 Fork 新增了简单的类替换式热修复，无需修改目标应用。

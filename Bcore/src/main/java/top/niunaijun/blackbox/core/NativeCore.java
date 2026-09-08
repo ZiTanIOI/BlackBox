@@ -52,6 +52,13 @@ public class NativeCore {
     public static native void rescanIOHook();
 
     /**
+     * 对容器内解压的 libunity.so 打“安装位置校验”补丁（见 UnityCompatPatch）。
+     * 纯文件改写，不注入也不 hook，所以不受 libc hook 开关影响。
+     * 返回 true 表示本次真的改写了文件。
+     */
+    public static native boolean patchUnityCompat(String libDir);
+
+    /**
      * 登记 libxposed 102 模块 native_init.list 里的 so 名。模块 Java 入口
      * System.loadLibrary 这些 so 时，native 层的 dlopen 包装按名单拦截，
      * 调用 so 导出的 native_init 完成回调注册，此后每次 dlopen 成功都会

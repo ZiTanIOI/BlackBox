@@ -10,6 +10,7 @@
 #include <Hook/VMClassLoaderHook.h>
 #include <Hook/UnixFileSystemHook.h>
 #include <Hook/NativeIOHook.h>
+#include <Hook/UnityCompatPatch.h>
 #include <Hook/LibXposedNative.h>
 #include <Hook/BinderHook.h>
 #include <Hook/RuntimeHook.h>
@@ -126,6 +127,16 @@ void rescanIOHook(JNIEnv *env, jclass clazz) {
     }
 }
 
+// 对容器内解压的 libunity.so 打安装位置校验补丁（纯文件改写，与 hook 开关无关）
+jboolean patchUnityCompat(JNIEnv *env, jclass clazz, jstring lib_dir) {
+    if (lib_dir == nullptr) return JNI_FALSE;
+    const char *dir = env->GetStringUTFChars(lib_dir, JNI_FALSE);
+    if (dir == nullptr) return JNI_FALSE;
+    bool changed = UnityCompatPatch::patchLibDir(dir);
+    env->ReleaseStringUTFChars(lib_dir, dir);
+    return changed ? JNI_TRUE : JNI_FALSE;
+}
+
 // 登记 libxposed 102 模块 native_init.list 的 so 名单；模块 Java 入口里
 // System.loadLibrary 这些 so 时，dlopen 包装按名单拦截并调用其 native_init
 void addXposedNativeLibs(JNIEnv *env, jclass clazz, jobjectArray libs) {
@@ -149,6 +160,7 @@ static JNINativeMethod gMethods[] = {
         {"enableLibcHook", "(Z)V",                                (void *) enableLibcHook},
         {"enableIO",   "()V",                                     (void *) enableIO},
         {"rescanIOHook", "()V",                                   (void *) rescanIOHook},
+        {"patchUnityCompat", "(Ljava/lang/String;)Z",             (void *) patchUnityCompat},
         {"addXposedNativeLibs", "([Ljava/lang/String;)V",         (void *) addXposedNativeLibs},
         {"init",       "(I)V",                                    (void *) init},
 };

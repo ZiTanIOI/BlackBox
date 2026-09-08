@@ -364,6 +364,12 @@ public class BActivityThread extends IBActivityThread.Stub {
         NativeCore.init(Build.VERSION.SDK_INT);
         // 用户可对指定应用禁用 libc GOT hook（反作弊兼容开关），需在 enableIO 前设置
         NativeCore.enableLibcHook(!LibcHookConfig.isDisabled(getUserId(), packageName));
+        // Unity 安装位置校验补丁：纯文件改写，与上面的 hook 开关无关，
+        // 保证“清空所有 hook 痕迹”的应用也能正常启动 Unity 游戏
+        try {
+            NativeCore.patchUnityCompat(BEnvironment.getAppLibDir(packageName).getAbsolutePath());
+        } catch (Throwable ignored) {
+        }
         assert packageContext != null;
         IOCore.get().enableRedirect(packageContext);
         fakeStorageManagerStatus();

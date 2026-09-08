@@ -16,6 +16,7 @@ aux_source_directory(./ SRC1)
 aux_source_directory(Utils SRC2)
 aux_source_directory(Hook SRC3)
 aux_source_directory(JniHook SRC4)
+# 新增源文件后需要重新 configure 才能被 aux_source_directory 收录
 add_compile_options(-w)
 add_library( # Sets the name of the library.
         blackbox
