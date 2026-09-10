@@ -26,6 +26,7 @@ import top.niunaijun.blackbox.entity.am.PendingResultData;
 import top.niunaijun.blackbox.entity.am.ReceiverData;
 import top.niunaijun.blackbox.entity.am.RunningAppProcessInfo;
 import top.niunaijun.blackbox.entity.am.RunningServiceInfo;
+import top.niunaijun.blackbox.proxy.record.PendingTargetIntents;
 import top.niunaijun.blackbox.utils.Slog;
 
 import static android.content.pm.PackageManager.GET_META_DATA;
@@ -372,6 +373,16 @@ public class BActivityManagerService extends IBActivityManagerService.Stub imple
             mUserSpace.put(userId, userSpace);
             return userSpace;
         }
+    }
+
+    @Override
+    public String putPendingTargetIntent(Intent intent) throws RemoteException {
+        return PendingTargetIntents.putLocal(intent);
+    }
+
+    @Override
+    public Intent getPendingTargetIntent(String token) throws RemoteException {
+        return PendingTargetIntents.getLocal(token);
     }
 
     @Override

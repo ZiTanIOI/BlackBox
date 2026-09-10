@@ -125,6 +125,73 @@ I/Process : Process is going to kill itself!
   `UnityCompatPatch: check strings present but no matching relocations, skip`
   （字符串存在但重定位对不上）或干脆没有 `rewrote N install-location reloc(s)` 行，便于发现并适配。
 
+## 代理 Intent 的目标传递（不再经过 system_server 解包）
+
+容器启动一个分身 Activity 时，需要把「分身自己发起的那个 Intent」从发起进程带到真正实例化
+Activity 的进程。老实现是把它当 Parcelable extra 塞进代理 Intent（`_B_|_target_`），而代理
+Intent 必须先交给 system_server；部分 ROM（实测 HyperOS 的 "IntentRedirect Hardening"）会主动
+**递归解包** nested extras，system_server 里没有分身 APK 的类，于是分身自定义的 Parcelable
+被解成 null，目标 Activity 拿到残缺 Intent：
+
+```
+E/Parcel : Class not found when unmarshalling: <分身 SDK 自己的 Parcelable>
+W/Bundle : android.os.BadParcelableException: ClassNotFoundException when unmarshalling: ...
+```
+
+从 2.3.2 起改成 **token + 容器内部 binder**：代理 Intent 里只放一个 String token，Intent 本体
+暂存在容器服务端（`PendingTargetIntents`，带 TTL 与容量上限），由目标进程按 token 经容器
+自己的 binder 取回。这样代理 Intent 中不再出现任何分身类，system_server 无法破坏它；Intent
+本体经 binder 传递时 extras 始终是 raw bundle，直到真正回到分身进程（类加载器可用）才解包。
+暂存失败时会回退到旧的 Parcelable 方式，保证不会完全起不来。
+
+## 第三方应用直通（宿主直通）
+
+有些分身应用需要通过**设备上真实安装的另一个 App** 完成功能，最典型的是「游戏内用第三方客户端一键登录」。这类客户端自己就带多进程、自研沙箱和动态插件，被导入容器后不一定能正常跑起来；而容器默认会把它当普通的「容器内跨应用跳转」处理——在自己的包管理器里解析（命中被导入的那份副本）并虚拟化启动。
+
+**宿主直通（Host Pass-through）** 提供一个开关：被标记为直通的包，即使在容器里导入了副本，**也不在容器内虚拟化**——guest 对它的跨应用调用直接放行给真实系统，用设备上真正安装的那一份。
+
+覆盖范围：
+
+- `startActivity` / `startActivityForResult`：直通到宿主 Activity（含 `startActivityForResult` 回传）；
+- `startService` / `bindService` / `getContentProvider`：直通到宿主 Service / Provider；
+- `getPackageInfo` / `getServiceInfo` / `getActivityInfo` / `getProviderInfo` / `getReceiverInfo` / `getApplicationInfo`：在宿主 PM 查询，让 guest 侧 SDK 能正确判断「客户端已安装」。
+
+判定依据有两处，命中任一即直通：Intent 自身显式指定的包（`setPackage` / `setComponent`），以及容器包管理器解析出来的目标包。
+
+### ⚠️ 默认列表为空，这是有意为之
+
+**需要校验调用方身份/签名的客户端不能直通。** 这类客户端的登录（SSO）会按 `getCallingPackage()`
+/ 调用方签名去核对「是哪个应用在请求」：
+
+- **直通到宿主**：客户端看到的是宿主包名，且调用方身份由 uid 决定、不可伪造——把 guest 包名
+  当 `callingPackage` 传出去会被系统直接拒绝（`Permission Denial: package=<guest 包名> does not
+  belong to uid=<宿主 uid>`）；
+- **跑在容器内**：反而是自洽的。容器 hook 了 `getCallingPackage` / `getCallingActivity` 返回
+  guest 包名，容器 PM 又原样保留 APK 里的真签名，客户端校验能过。
+
+所以默认列表留空：需要身份校验的客户端应当**跑在容器内**；直通通道保留给那些「容器内实在跑
+不起来、且不校验调用方身份」的客户端。
+
+### 配置
+
+编辑宿主的 `blackbox/system/host-apps.conf`（每行一个包名，`#` 开头为注释）：
+
+```
+# 加入直通
+com.example.companion
+# 以 '-' 开头表示从内置默认项里排除
+-com.example.other
+```
+
+文件改动后**下次判断即生效**（按 mtime 自动重载），不需要重启容器。
+
+### 注意
+
+- 直通走的是真实系统，因此**分享的是宿主上那份客户端的数据与登录态**（容器内的副本不会参与）；
+- 直通判断发生在容器解析之后，因此对显式组件 Intent 与隐式 Intent 同样有效。
+- 部分客户端（自带沙箱 / 动态插件 / 反调试）在容器内运行需要额外放行：可以在「热修复配置」
+  里把该应用的 libc hook 关掉，否则可能直接拖崩整个容器。
+
 ## 热修复
 本 Fork 新增了简单的类替换式热修复，无需修改目标应用。
 

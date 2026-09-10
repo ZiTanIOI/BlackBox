@@ -74,6 +74,14 @@ public class BEnvironment {
         return new File(getSystemDir(), "fake-location.conf");
     }
 
+    /**
+     * 宿主直通应用列表（每行一个包名，# 开头为注释）。
+     * 这些应用不在容器内虚拟化，guest 的跨应用调用会直接放行到真实系统。
+     */
+    public static File getHostAppsConf() {
+        return new File(getSystemDir(), "host-apps.conf");
+    }
+
     public static File getHotfixDir() {
         return new File(sVirtualRoot, "hotfix");
     }

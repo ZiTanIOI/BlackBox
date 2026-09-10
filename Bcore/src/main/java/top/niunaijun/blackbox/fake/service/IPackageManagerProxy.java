@@ -132,7 +132,7 @@ public class IPackageManagerProxy extends BinderInvocationStub {
             if (packageInfo != null) {
                 return packageInfo;
             }
-            if (AppSystemEnv.isOpenPackage(packageName)) {
+            if (AppSystemEnv.isHostVisiblePackage(packageName)) {
                 return method.invoke(who, args);
             }
             return null;
@@ -157,7 +157,7 @@ public class IPackageManagerProxy extends BinderInvocationStub {
             ProviderInfo providerInfo = BlackBoxCore.getBPackageManager().getProviderInfo(componentName, flags, BActivityThread.getUserId());
             if (providerInfo != null)
                 return providerInfo;
-            if (AppSystemEnv.isOpenPackage(componentName)) {
+            if (AppSystemEnv.isHostVisiblePackage(componentName)) {
                 return method.invoke(who, args);
             }
             return null;
@@ -173,7 +173,7 @@ public class IPackageManagerProxy extends BinderInvocationStub {
             ActivityInfo receiverInfo = BlackBoxCore.getBPackageManager().getReceiverInfo(componentName, flags, BActivityThread.getUserId());
             if (receiverInfo != null)
                 return receiverInfo;
-            if (AppSystemEnv.isOpenPackage(componentName)) {
+            if (AppSystemEnv.isHostVisiblePackage(componentName)) {
                 return method.invoke(who, args);
             }
             return null;
@@ -189,7 +189,7 @@ public class IPackageManagerProxy extends BinderInvocationStub {
             ActivityInfo activityInfo = BlackBoxCore.getBPackageManager().getActivityInfo(componentName, flags, BActivityThread.getUserId());
             if (activityInfo != null)
                 return activityInfo;
-            if (AppSystemEnv.isOpenPackage(componentName)) {
+            if (AppSystemEnv.isHostVisiblePackage(componentName)) {
                 return method.invoke(who, args);
             }
             return null;
@@ -206,7 +206,7 @@ public class IPackageManagerProxy extends BinderInvocationStub {
             ServiceInfo serviceInfo = BlackBoxCore.getBPackageManager().getServiceInfo(componentName, flags, BActivityThread.getUserId());
             if (serviceInfo != null)
                 return serviceInfo;
-            if (AppSystemEnv.isOpenPackage(componentName)) {
+            if (AppSystemEnv.isHostVisiblePackage(componentName)) {
                 return method.invoke(who, args);
             }
             return null;
@@ -248,7 +248,7 @@ public class IPackageManagerProxy extends BinderInvocationStub {
             if (applicationInfo != null) {
                 return applicationInfo;
             }
-            if (AppSystemEnv.isOpenPackage(packageName)) {
+            if (AppSystemEnv.isHostVisiblePackage(packageName)) {
                 return method.invoke(who, args);
             }
             return null;

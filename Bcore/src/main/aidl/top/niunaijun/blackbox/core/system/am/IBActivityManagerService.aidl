@@ -58,4 +58,9 @@ interface IBActivityManagerService {
     void getIntentSender(in IBinder target, String packageName, int uid, int userId);
     String getPackageForIntentSender(in IBinder target, int userId);
     int getUidForIntentSender(in IBinder target, int userId);
+
+    // 分身 Activity 的目标 Intent 暂存（只传 token，Intent 本体走容器内部 binder，
+    // 避免代理 Intent 过 system_server 时被递归解包，解坏分身自定义 Parcelable）
+    String putPendingTargetIntent(in Intent intent);
+    Intent getPendingTargetIntent(String token);
 }

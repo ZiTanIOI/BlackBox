@@ -128,6 +128,12 @@ public class IActivityManagerProxy extends ClassInvocationStub {
                     Log.d(TAG, "hook getContentProvider: " + auth);
 
                     ProviderInfo providerInfo = BlackBoxCore.getBPackageManager().resolveContentProvider((String) auth, GET_META_DATA, BActivityThread.getUserId());
+                    // 宿主直通：目标 Provider 属于直通应用时，交给真实系统，
+                    // 由 guest 直接拿到宿主应用的 provider（容器内没有它的实例）。
+                    if (providerInfo != null && AppSystemEnv.isHostPackage(providerInfo.packageName)) {
+                        Log.d(TAG, "HostPassThrough provider: " + auth);
+                        return method.invoke(who, args);
+                    }
                     if (providerInfo == null) {
 //                        Log.d(TAG, "hook system: " + auth);
 //                        Object invoke = method.invoke(who, args);
@@ -192,6 +198,11 @@ public class IActivityManagerProxy extends ClassInvocationStub {
             Intent intent = (Intent) args[1];
             String resolvedType = (String) args[2];
             ResolveInfo resolveInfo = BlackBoxCore.getBPackageManager().resolveService(intent, 0, resolvedType, BActivityThread.getUserId());
+            // 宿主直通：直通应用的 Service 不在容器内虚拟化，直接交给真实系统
+            if (resolveInfo != null && AppSystemEnv.isHostPackage(resolveInfo.serviceInfo.packageName)) {
+                Log.d(TAG, "HostPassThrough startService: " + intent);
+                return method.invoke(who, args);
+            }
             if (resolveInfo == null) {
                 return method.invoke(who, args);
             }
@@ -245,6 +256,12 @@ public class IActivityManagerProxy extends ClassInvocationStub {
             int userId = intent.getIntExtra("_B_|_UserId", -1);
             userId = userId == -1 ? BActivityThread.getUserId() : userId;
             ResolveInfo resolveInfo = BlackBoxCore.getBPackageManager().resolveService(intent, 0, resolvedType, userId);
+            // 宿主直通：直通应用的 Service 绑定请求直接交给真实系统，
+            // 否则 guest 会绑定到容器里的副本（或什么都不发生）。
+            if (resolveInfo != null && AppSystemEnv.isHostPackage(resolveInfo.serviceInfo.packageName)) {
+                Log.d(TAG, "HostPassThrough bindService: " + intent);
+                return method.invoke(who, args);
+            }
             if (resolveInfo != null || AppSystemEnv.isOpenPackage(intent.getComponent())) {
                 Intent proxyIntent = BlackBoxCore.getBActivityManager().bindService(intent,
                         connection == null ? null : connection.asBinder(),

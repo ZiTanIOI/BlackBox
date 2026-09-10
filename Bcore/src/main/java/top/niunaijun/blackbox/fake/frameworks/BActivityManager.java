@@ -80,6 +80,25 @@ public class BActivityManager extends BlackManager<IBActivityManagerService> {
         return -1;
     }
 
+    /** 暂存分身 Activity 的目标 Intent，返回 token。Intent 本体只走容器内部 binder。 */
+    public String putPendingTargetIntent(Intent intent) {
+        try {
+            return getService().putPendingTargetIntent(intent);
+        } catch (RemoteException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    public Intent getPendingTargetIntent(String token) {
+        try {
+            return getService().getPendingTargetIntent(token);
+        } catch (RemoteException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
     public ComponentName startService(Intent intent, String resolvedType, boolean requireForeground, int userId) {
         try {
             return getService().startService(intent, resolvedType, requireForeground, userId);
