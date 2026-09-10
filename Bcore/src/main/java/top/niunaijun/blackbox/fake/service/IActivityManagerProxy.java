@@ -48,6 +48,7 @@ import top.niunaijun.blackbox.proxy.record.ProxyBroadcastRecord;
 import top.niunaijun.blackbox.proxy.record.ProxyPendingRecord;
 import top.niunaijun.blackbox.utils.MethodParameterUtils;
 import top.niunaijun.blackbox.utils.Reflector;
+import top.niunaijun.blackbox.utils.WebViewRendererSlots;
 import top.niunaijun.blackbox.utils.compat.ActivityManagerCompat;
 import top.niunaijun.blackbox.utils.compat.BuildCompat;
 import top.niunaijun.blackbox.utils.compat.ParceledListSliceCompat;
@@ -252,6 +253,16 @@ public class IActivityManagerProxy extends ClassInvocationStub {
             Intent intent = (Intent) args[2];
             String resolvedType = (String) args[3];
             IServiceConnection connection = (IServiceConnection) args[4];
+
+            // WebView 渲染进程槽位：provider 声明了一池 SandboxedProcessService0..N，
+            // Chromium 在每个进程内都从 0 号开始挑，于是容器里多个 guest 进程会撞在同一个
+            // 服务实例上，第二个 guest 的渲染进程永远起不来（cr_ChildProcessService 报
+            // "Service is already bound by pid X"）。这里按 guest 进程加偏移，各占一段。
+            Intent remapped = WebViewRendererSlots.remapIntent(intent);
+            if (remapped != null) {
+                args[2] = remapped;
+                intent = remapped;
+            }
 
             int userId = intent.getIntExtra("_B_|_UserId", -1);
             userId = userId == -1 ? BActivityThread.getUserId() : userId;

@@ -144,6 +144,32 @@ W/Bundle : android.os.BadParcelableException: ClassNotFoundException when unmars
 本体经 binder 传递时 extras 始终是 raw bundle，直到真正回到分身进程（类加载器可用）才解包。
 暂存失败时会回退到旧的 Parcelable 方式，保证不会完全起不来。
 
+## WebView 渲染进程槽位
+
+WebView provider 在 manifest 里声明了一池渲染服务 `org.chromium.content.app.SandboxedProcessService0 .. N`
+（本机实测 40 个），而 Chromium 的 `ConnectionAllocator` 是在**自己的进程内**挑空闲索引的——每个
+进程都从 0 号开始挑。容器里多个 guest 进程（各自是独立的宿主子进程）于是全都会 bind 到同一个
+`SandboxedProcessService0`，而渲染进程里的 `ChildProcessService` 一次只服务一个客户端，第二个被
+直接打回：
+
+```
+E/cr_ChildProcessService: Service is already bound by pid A, cannot bind for pid B
+E/cr_ChildProcLauncher  : ChildProcessConnection.start failed, trying again   ← 无限重试
+```
+
+后果是「第二个需要 WebView 的 guest 进程」永远拿不到渲染进程，界面画不出来（登录页 / 内嵌网页
+直接白屏或秒退）。
+
+从 2.3.2 起在容器的 `bindService` 钩子里按 guest 进程给服务索引加偏移（`WebViewRendererSlots`）：
+每个 guest 各占一段槽位。两个实现要点：
+
+- 槽位必须用容器在 `:black` 里统一分配的 guest 进程编号 `bpid` 来算——容器框架类在每个 guest 进程里
+  各有一份，statics 不共享，用自己的计数器会让每个进程都从 0 开始；
+- 改写走的是 Intent **副本**：Chromium 渲染进程启动失败时会重用同一个 Intent 对象重试，就地改写会
+  让索引一路 0→4→8→12 漂移。
+
+实测修复后两个渲染进程可以并存（`:sandboxed_process0` 与 `:sandboxed_process4`），上述两条错误消失。
+
 ## 第三方应用直通（宿主直通）
 
 有些分身应用需要通过**设备上真实安装的另一个 App** 完成功能，最典型的是「游戏内用第三方客户端一键登录」。这类客户端自己就带多进程、自研沙箱和动态插件，被导入容器后不一定能正常跑起来；而容器默认会把它当普通的「容器内跨应用跳转」处理——在自己的包管理器里解析（命中被导入的那份副本）并虚拟化启动。
