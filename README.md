@@ -144,6 +144,29 @@ W/Bundle : android.os.BadParcelableException: ClassNotFoundException when unmars
 本体经 binder 传递时 extras 始终是 raw bundle，直到真正回到分身进程（类加载器可用）才解包。
 暂存失败时会回退到旧的 Parcelable 方式，保证不会完全起不来。
 
+## PackageInfo 的组件回包体积
+
+带组件标志查询 `getPackageInfo(pkg, GET_ACTIVITIES|GET_RECEIVERS|GET_SERVICES|GET_PROVIDERS|...)`
+时，系统 PMS 给所有组件挂的是**同一个 `ApplicationInfo` 实例**，Parcel 序列化会按对象身份去重，
+回包很小；容器早先给每个组件各 `new` 一份新实例，去重失效。manifest 重的应用（实测某客户端有
+936 个 activity + 209 个 service + 150 个 provider + 27 个 receiver）回包会从 ~390KB 膨胀到
+**~3.0MB**，直接超过 binder 事务上限（1MB），调用以
+`FAILED BINDER TRANSACTION / DeadObjectException` 失败，客户端拿到 null：
+
+```
+E JavaBinder : !!! FAILED BINDER TRANSACTION !!! (parcel size = 176)
+W System.err : android.os.DeadObjectException: Transaction failed on small parcel; ...
+    at IBPackageManagerService$Stub$Proxy.getPackageInfo
+```
+
+后果是任何对该查询做完整性自检的应用都会认为「包不存在/被篡改」，进而拒绝继续（例如登录直接
+中止）。修复：整包只生成一份 `ApplicationInfo` 并共享给全部组件，实测回包
+3,191,204 → 404,428 字节，与系统 PMS 的 392,796 基本一致。
+
+另外注意：`ComponentInfo.writeToParcel` 在 `applicationInfo == null` 时会抛 NPE，而服务端
+**在写回复的过程中**抛异常会让整个 binder 事务中断（表现为上面的 "small parcel"）。所以组件
+的 `applicationInfo` 永远不能为 null，共享同一实例同时也消除了这个隐患。
+
 ## WebView 渲染进程槽位
 
 WebView provider 在 manifest 里声明了一池渲染服务 `org.chromium.content.app.SandboxedProcessService0 .. N`

@@ -80,7 +80,11 @@ public class PackageManagerCompat {
         pi.versionName = p.mVersionName;
         pi.sharedUserId = p.mSharedUserId;
         pi.sharedUserLabel = p.mSharedUserLabel;
-        pi.applicationInfo = generateApplicationInfo(p, flags, state, userId);
+        // 整包只生成一份 ApplicationInfo，所有组件共用同一实例：Parcel 序列化按对象
+        // 身份去重，回包大小与系统 PMS 一致；若每个组件各 new 一份，上千组件的回包会
+        // 膨胀到几 MB 并超过 binder 事务上限，导致客户端拿不到 PackageInfo。
+        final ApplicationInfo sharedAppInfo = generateApplicationInfo(p, flags, state, userId);
+        pi.applicationInfo = sharedAppInfo;
 
         pi.firstInstallTime = firstInstallTime;
         pi.lastUpdateTime = lastUpdateTime;
@@ -113,7 +117,7 @@ public class PackageManagerCompat {
                 final ActivityInfo[] res = new ActivityInfo[N];
                 for (int i = 0; i < N; i++) {
                     final BPackage.Activity a = p.activities.get(i);
-                    res[num++] = generateActivityInfo(a, flags, state, userId);
+                    res[num++] = generateActivityInfo(a, flags, state, userId, sharedAppInfo);
                 }
                 pi.activities = ArrayUtils.trimToSize(res, num);
             }
@@ -126,7 +130,7 @@ public class PackageManagerCompat {
                 final ActivityInfo[] res = new ActivityInfo[N];
                 for (int i = 0; i < N; i++) {
                     final BPackage.Activity a = p.receivers.get(i);
-                    res[num++] = generateActivityInfo(a, flags, state, userId);
+                    res[num++] = generateActivityInfo(a, flags, state, userId, sharedAppInfo);
                 }
                 pi.receivers = ArrayUtils.trimToSize(res, num);
             }
@@ -139,7 +143,7 @@ public class PackageManagerCompat {
                 final ServiceInfo[] res = new ServiceInfo[N];
                 for (int i = 0; i < N; i++) {
                     final BPackage.Service s = p.services.get(i);
-                    res[num++] = generateServiceInfo(s, flags, state, userId);
+                    res[num++] = generateServiceInfo(s, flags, state, userId, sharedAppInfo);
                 }
                 pi.services = ArrayUtils.trimToSize(res, num);
             }
@@ -152,7 +156,7 @@ public class PackageManagerCompat {
                 final ProviderInfo[] res = new ProviderInfo[N];
                 for (int i = 0; i < N; i++) {
                     final BPackage.Provider pr = p.providers.get(i);
-                    ProviderInfo providerInfo = generateProviderInfo(pr, flags, state, userId);
+                    ProviderInfo providerInfo = generateProviderInfo(pr, flags, state, userId, sharedAppInfo);
                     if (providerInfo != null) {
                         res[num++] = providerInfo;
                     }
@@ -223,6 +227,18 @@ public class PackageManagerCompat {
     }
 
     public static ActivityInfo generateActivityInfo(BPackage.Activity a, int flags, BPackageUserState state, int userId) {
+        return generateActivityInfo(a, flags, state, userId, null);
+    }
+
+    /**
+     * @param sharedApplicationInfo 由调用方预先算好的 ApplicationInfo。
+     *        带组件标志查询时，系统 PMS 给所有组件挂的是<b>同一个实例</b>，
+     *        Parcel 序列化会按对象身份去重，回包因此很小；容器如果给每个组件都新
+     *        new 一份，去重失效，上千个组件的回包会膨胀到几 MB，直接超过 binder
+     *        事务上限（1MB）导致调用失败。所以这里必须复用同一个实例。
+     */
+    public static ActivityInfo generateActivityInfo(BPackage.Activity a, int flags, BPackageUserState state,
+                                                    int userId, ApplicationInfo sharedApplicationInfo) {
         if (!checkUseInstalledOrHidden(flags, state, a.info.applicationInfo)) {
             return null;
         }
@@ -230,11 +246,17 @@ public class PackageManagerCompat {
         ActivityInfo ai = new ActivityInfo(a.info);
         ai.metaData = a.metaData;
         ai.processName = BPackageManagerService.fixProcessName(ai.packageName, ai.processName);
-        ai.applicationInfo = generateApplicationInfo(a.owner, flags, state, userId);
+        ai.applicationInfo = sharedApplicationInfo != null
+                ? sharedApplicationInfo : generateApplicationInfo(a.owner, flags, state, userId);
         return ai;
     }
 
     public static ServiceInfo generateServiceInfo(BPackage.Service s, int flags, BPackageUserState state, int userId) {
+        return generateServiceInfo(s, flags, state, userId, null);
+    }
+
+    public static ServiceInfo generateServiceInfo(BPackage.Service s, int flags, BPackageUserState state,
+                                                  int userId, ApplicationInfo sharedApplicationInfo) {
         if (!checkUseInstalledOrHidden(flags, state, s.info.applicationInfo)) {
             return null;
         }
@@ -242,11 +264,17 @@ public class PackageManagerCompat {
         ServiceInfo si = new ServiceInfo(s.info);
         si.metaData = s.metaData;
         si.processName = BPackageManagerService.fixProcessName(si.packageName, si.processName);
-        si.applicationInfo = generateApplicationInfo(s.owner, flags, state, userId);
+        si.applicationInfo = sharedApplicationInfo != null
+                ? sharedApplicationInfo : generateApplicationInfo(s.owner, flags, state, userId);
         return si;
     }
 
     public static ProviderInfo generateProviderInfo(BPackage.Provider p, int flags, BPackageUserState state, int userId) {
+        return generateProviderInfo(p, flags, state, userId, null);
+    }
+
+    public static ProviderInfo generateProviderInfo(BPackage.Provider p, int flags, BPackageUserState state,
+                                                    int userId, ApplicationInfo sharedApplicationInfo) {
         if (!checkUseInstalledOrHidden(flags, state, p.info.applicationInfo)) {
             return null;
         }
@@ -259,7 +287,8 @@ public class PackageManagerCompat {
         if ((flags & PackageManager.GET_URI_PERMISSION_PATTERNS) == 0) {
             pi.uriPermissionPatterns = null;
         }
-        pi.applicationInfo = generateApplicationInfo(p.owner, flags, state, userId);
+        pi.applicationInfo = sharedApplicationInfo != null
+                ? sharedApplicationInfo : generateApplicationInfo(p.owner, flags, state, userId);
         return pi;
     }
 
